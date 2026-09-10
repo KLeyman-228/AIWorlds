@@ -6,5 +6,5 @@ app_name = 'worlds'
 urlpatterns = [
     path('health/', views.health, name='health'),
     path('generate/', views.generate_world, name='generate'),
-    path('models/', views.list_models, name='models'),
+    path('generate/file/', views.generate_world_file, name='generate_file'),
 ]

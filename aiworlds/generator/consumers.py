@@ -1,12 +1,12 @@
 """
-WebSocket-обработчик для стриминга статусов генерации.
+WebSocket для стриминга статусов генерации.
 """
 import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from channels.db import database_sync_to_async
 
-from .services.scene_builder import build_world
+from .services.scene_builder import build_world_js
 
 log = logging.getLogger(__name__)
 
@@ -14,13 +14,12 @@ log = logging.getLogger(__name__)
 class WorldConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
-        log.info('🔌 WebSocket подключён')
+        log.info('🔌 WS connected')
 
     async def disconnect(self, close_code):
-        log.info('🔌 WebSocket отключён')
+        log.info('🔌 WS disconnected')
 
     async def receive(self, text_data):
-        # 1. Парсим JSON
         try:
             data = json.loads(text_data)
         except json.JSONDecodeError:
@@ -33,18 +32,20 @@ class WorldConsumer(AsyncWebsocketConsumer):
             return
 
         try:
-            # 2. AI думает
             await self.send_json({'status': 'ai_thinking'})
 
-            # 3. Строим мир (sync → async)
-            world = await database_sync_to_async(build_world)(prompt)
+            result = await database_sync_to_async(build_world_js)(prompt)
 
-            # 4. Отправляем результат
-            await self.send_json({'status': 'complete', **world})
+            await self.send_json({
+                'status': 'complete',
+                'world_name': result['world_name'],
+                'description': result['description'],
+                'js_code': result['js_code'],
+            })
 
         except Exception as e:
             log.exception('WS generation failed')
             await self.send_json({'status': 'error', 'message': str(e)})
 
-    async def send_json(self, payload: dict):
+    async def send_json(self, payload):
         await self.send(text_data=json.dumps(payload, ensure_ascii=False))
