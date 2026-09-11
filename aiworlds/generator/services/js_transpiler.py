@@ -4,7 +4,8 @@
 """
 import json
 import logging
-from textwrap import dedent
+import hashlib
+import re
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,14 @@ JS_HEADER = """/**
  *
  * Подключение:
  *   <div id="world-container"></div>
+ *   <script type="importmap">
+ *   {{
+ *     "imports": {{
+ *       "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+ *       "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+ *     }}
+ *   }}
+ *   </script>
  *   <script type="module" src="./world.js"></script>
  */
 
@@ -90,7 +99,6 @@ function applyTransform(mesh, prim) {{
 }}
 
 function compileShader(config, renderer) {{
-  // Проверка компиляции
   try {{
     const gl = renderer.getContext();
     const vs = gl.createShader(gl.VERTEX_SHADER);
@@ -99,7 +107,7 @@ function compileShader(config, renderer) {{
     if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {{
       console.warn('[World] VS error:', gl.getShaderInfoLog(vs));
       gl.deleteShader(vs);
-      throw new Error('vs');
+      throw new Error('vertex shader failed');
     }}
     gl.deleteShader(vs);
 
@@ -109,7 +117,7 @@ function compileShader(config, renderer) {{
     if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {{
       console.warn('[World] FS error:', gl.getShaderInfoLog(fs));
       gl.deleteShader(fs);
-      throw new Error('fs');
+      throw new Error('fragment shader failed');
     }}
     gl.deleteShader(fs);
 
@@ -117,18 +125,6 @@ function compileShader(config, renderer) {{
   }} catch (e) {{
     console.warn('[World] Shader failed, fallback used:', e.message);
     return new THREE.MeshStandardMaterial({{ color: 0x88aa66, flatShading: true }});
-  }}
-}}
-
-function uniformValue(cfg) {{
-  const v = cfg.value;
-  switch (cfg.type) {{
-    case 'float': case 'int': return typeof v === 'number' ? v : 0;
-    case 'vec2': return new THREE.Vector2(...(v || [0, 0]));
-    case 'vec3': return new THREE.Vector3(...(v || [0, 0, 0]));
-    case 'vec4': return new THREE.Vector4(...(v || [0, 0, 0, 0]));
-    case 'color': return new THREE.Color(...(v || [1, 1, 1]));
-    default: return v;
   }}
 }}
 
@@ -228,8 +224,9 @@ worldGroup.add(terrain);
 
 """
 
+# ⚠️ ГЛАВНОЕ ОТЛИЧИЕ: IIFE + именованная переменная propMaterial_<name>
 JS_PROP_TEMPLATE = """// ============ PROP: {prop_name} ============
-{{
+const {material_var} = (function() {{
   const propShader = {{
     uniforms: {{
 {uniforms_lines}
@@ -238,11 +235,10 @@ JS_PROP_TEMPLATE = """// ============ PROP: {prop_name} ============
     fragmentShader: {fragment_json},
   }};
 
-  const propMaterial = compileShader(propShader, renderer);
-  propMaterial.side = THREE.DoubleSide;
+  const mat = compileShader(propShader, renderer);
+  mat.side = THREE.DoubleSide;
 
   const propGeometry = {geometry_json};
-
   const propInstances = {instances_json};
 
   for (const inst of propInstances) {{
@@ -250,7 +246,7 @@ JS_PROP_TEMPLATE = """// ============ PROP: {prop_name} ============
     for (const prim of propGeometry.primitives || []) {{
       const geo = buildPrimitive(prim);
       if (!geo) continue;
-      const mesh = new THREE.Mesh(geo, propMaterial);
+      const mesh = new THREE.Mesh(geo, mat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       applyTransform(mesh, prim);
@@ -268,7 +264,9 @@ JS_PROP_TEMPLATE = """// ============ PROP: {prop_name} ============
     }}
     worldGroup.add(propGroup);
   }}
-}}
+
+  return mat;
+}})();
 
 """
 
@@ -331,8 +329,12 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
     parts.append(JS_HEADER.format(
         world_name=plan.get('world_name', 'Unnamed World'),
         description=plan.get('description', ''),
-        world_name_json=json.dumps(plan.get('world_name', 'Unnamed World'), ensure_ascii=False),
-        description_json=json.dumps(plan.get('description', ''), ensure_ascii=False),
+        world_name_json=json.dumps(
+            plan.get('world_name', 'Unnamed World'), ensure_ascii=False
+        ),
+        description_json=json.dumps(
+            plan.get('description', ''), ensure_ascii=False
+        ),
         atmosphere_json=json.dumps(plan['atmosphere'], indent=2),
     ))
 
@@ -344,51 +346,61 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
 
     # --- Props ---
     prop_material_names = []
-    for prop_name, prop in (plan.get('props') or {}).items():
+    props = plan.get('props') or {}
+
+    for prop_name, prop in props.items():
         safe_name = _sanitize_js_identifier(prop_name)
+        material_var = f'propMaterial_{safe_name}'
 
-        # Uniforms
-        uniforms_lines = _build_uniforms_lines(prop['shader'].get('uniforms', {}))
+        # Uniforms (гарантируем uTime внутри _build_uniforms_lines)
+        uniforms_lines = _build_uniforms_lines(
+            prop.get('shader', {}).get('uniforms', {})
+        )
 
-        # Geometry (без shader-полей)
-        geometry = prop['geometry']
+        # Geometry
+        geometry = prop.get('geometry', {'primitives': []})
 
         # Instances
         instances = prop.get('instances', []) or []
 
+        # Shader — с fallback на случай отсутствия
+        shader = prop.get('shader') or {}
+        vertex = shader.get('vertex', '')
+        fragment = shader.get('fragment', '')
+
         prop_code = JS_PROP_TEMPLATE.format(
             prop_name=safe_name,
+            material_var=material_var,
             uniforms_lines=uniforms_lines,
-            vertex_json=json.dumps(prop['shader']['vertex'], ensure_ascii=False),
-            fragment_json=json.dumps(prop['shader']['fragment'], ensure_ascii=False),
+            vertex_json=json.dumps(vertex, ensure_ascii=False),
+            fragment_json=json.dumps(fragment, ensure_ascii=False),
             geometry_json=json.dumps(geometry, ensure_ascii=False, indent=4),
             instances_json=json.dumps(instances, ensure_ascii=False, indent=4),
         )
         parts.append(prop_code)
-        prop_material_names.append(f'propMaterial_{safe_name}')
+        prop_material_names.append(material_var)
 
     # --- Post-process ---
     pp = plan.get('post_process', {}).get('shader')
-    if pp and pp.get('vertex') and pp.get('fragment'):
+    has_pp = bool(pp and pp.get('vertex') and pp.get('fragment'))
+
+    if has_pp:
         pp_block = _build_post_process_block(pp)
         parts.append(JS_FOOTER.format(
             post_process_block=pp_block,
-            prop_materials_list=', '.join(
-                f'propMaterial_{_sanitize_js_identifier(n)}'
-                for n in (plan.get('props') or {}).keys()
+            prop_materials_list=', '.join(prop_material_names) or '',
+            pp_time_update=(
+                '  if (ppPass && ppPass.uniforms && ppPass.uniforms.uTime) {\n'
+                '    ppPass.uniforms.uTime.value = t;\n'
+                '  }'
             ),
-            pp_time_update='  if (ppPass && ppPass.uniforms && ppPass.uniforms.uTime) {\n    ppPass.uniforms.uTime.value = t;\n  }',
             render_call='composer.render();',
             composer_resize='if (composer) composer.setSize(w, h);',
         ))
     else:
-        # Без пост-обработки
         parts.append(JS_FOOTER.format(
-            post_process_block='const composer = null; const ppPass = null;',
-            prop_materials_list=', '.join(
-                f'propMaterial_{_sanitize_js_identifier(n)}'
-                for n in (plan.get('props') or {}).keys()
-            ),
+            post_process_block='const composer = null;\nconst ppPass = null;',
+            prop_materials_list=', '.join(prop_material_names) or '',
             pp_time_update='',
             render_call='renderer.render(scene, camera);',
             composer_resize='',
@@ -396,6 +408,10 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
 
     js_code = '\n'.join(parts)
     log.info(f'✅ JS код готов ({len(js_code)} символов)')
+
+    # Опционально: валидация через node --check
+    _validate_js(js_code)
+
     return js_code
 
 
@@ -404,29 +420,66 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
 # ============================================================
 
 def _sanitize_js_identifier(name: str) -> str:
-    """Превращает произвольную строку в валидный JS-идентификатор."""
-    import re
+    """
+    Превращает произвольную строку в валидный JS-идентификатор.
+    Кириллицу и спецсимволы заменяет на хеш.
+    """
+    if not name:
+        return '_empty'
+
+    # Транслитерация ASCII
     safe = re.sub(r'[^a-zA-Z0-9_]', '_', name)
-    if not safe or safe[0].isdigit():
+
+    # Если получились только подчёркивания — используем хеш
+    if not safe or set(safe) <= {'_'}:
+        safe = 'prop_' + hashlib.md5(name.encode('utf-8')).hexdigest()[:8]
+
+    # Не может начинаться с цифры
+    if safe[0].isdigit():
         safe = '_' + safe
+
+    # Защита от зарезервированных слов JS
+    RESERVED = {
+        'class', 'function', 'var', 'let', 'const', 'return', 'new',
+        'delete', 'typeof', 'instanceof', 'void', 'this', 'null',
+        'true', 'false', 'if', 'else', 'for', 'while', 'do', 'switch',
+        'case', 'default', 'break', 'continue', 'try', 'catch', 'finally',
+        'throw', 'with', 'in', 'of', 'yield', 'await', 'async',
+        'import', 'export', 'from', 'as',
+    }
+    if safe in RESERVED:
+        safe = '_' + safe
+
     return safe
 
 
 def _build_uniforms_lines(uniforms: dict) -> str:
-    """Строит JS-код для uniforms."""
+    """
+    Строит JS-код для uniforms.
+    Возвращает строки, разделённые ',\n' — БЕЗ запятой в конце.
+    Всегда гарантирует наличие uTime.
+    """
+    # Копируем, чтобы не мутировать оригинал
+    u = dict(uniforms or {})
+
+    # Гарантируем uTime
+    if 'uTime' not in u:
+        u['uTime'] = {'type': 'float', 'value': 0}
+
     lines = []
-    for name, cfg in uniforms.items():
-        if name == 'uTime':
-            lines.append(f'      {name}: {{ value: 0 }}')
+    for name, cfg in u.items():
+        if not isinstance(cfg, dict):
             continue
 
         typ = cfg.get('type', 'float')
         val = cfg.get('value')
 
         if typ == 'float':
-            lines.append(f'      {name}: {{ value: {val if val is not None else 0} }}')
+            v = val if val is not None else 0
+            lines.append(f'      {name}: {{ value: {v} }}')
         elif typ == 'int':
-            lines.append(f'      {name}: {{ value: {int(val) if val is not None else 0} }}')
+            v = int(val) if val is not None else 0
+            lines.append(f'      {name}: {{ value: {v} }}')
         elif typ == 'vec2':
             v = val or [0, 0]
             lines.append(f'      {name}: {{ value: new THREE.Vector2({v[0]}, {v[1]}) }}')
@@ -442,7 +495,8 @@ def _build_uniforms_lines(uniforms: dict) -> str:
         else:
             lines.append(f'      {name}: {{ value: {json.dumps(val)} }}')
 
-    return '\n'.join(lines)
+    # ⚠️ ГЛАВНЫЙ ФИКС: разделяем запятыми
+    return ',\n'.join(lines)
 
 
 def _build_post_process_block(shader: dict) -> str:
@@ -455,7 +509,6 @@ composer.addPass(new RenderPass(scene, camera));
 const ppShader = {{
   uniforms: {{
     tDiffuse: {{ value: null }},
-    uTime: {{ value: 0 }},
     uResolution: {{ value: new THREE.Vector2(container.clientWidth, container.clientHeight) }},
 {uniforms_lines}
   }},
@@ -472,3 +525,45 @@ try {{
   console.warn('[World] Post-process failed:', e);
 }}
 """
+
+
+def _validate_js(js_code: str) -> bool:
+    """
+    Проверяет синтаксис сгенерированного JS через node --check.
+    Если node не установлен — просто возвращает True.
+    """
+    import subprocess
+    import tempfile
+    import os
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            'w', suffix='.mjs', delete=False, encoding='utf-8'
+        ) as f:
+            # Заглушки для модулей (node --check не резолвит импорты, это ок)
+            f.write(js_code)
+            fpath = f.name
+
+        result = subprocess.run(
+            ['node', '--check', fpath],
+            capture_output=True, text=True, timeout=10,
+        )
+
+        os.unlink(fpath)
+
+        if result.returncode == 0:
+            log.info('✅ JS syntax OK')
+            return True
+        else:
+            log.error(f'❌ JS syntax error:\n{result.stderr}')
+            return False
+
+    except FileNotFoundError:
+        log.warning('⚠️ Node.js не найден — пропускаем проверку синтаксиса')
+        return True
+    except subprocess.TimeoutExpired:
+        log.warning('⚠️ node --check timeout')
+        return True
+    except Exception as e:
+        log.warning(f'⚠️ JS validation failed: {e}')
+        return True
