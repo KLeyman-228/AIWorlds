@@ -114,3 +114,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+AI_MODEL = 'kimi-k3'
+AI_FAST_MODEL = 'kimi-k3'
+AI_BASE_URL = 'https://api.vibecodecheap.com/v1/ai/v1'

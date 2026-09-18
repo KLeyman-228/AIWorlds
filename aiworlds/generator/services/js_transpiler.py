@@ -98,34 +98,36 @@ function applyTransform(mesh, prim) {{
   }}
 }}
 
-function compileShader(config, renderer) {{
+function compileShader(config, fallbackColor = 0x7a9a5a) {{
   try {{
-    const gl = renderer.getContext();
-    const vs = gl.createShader(gl.VERTEX_SHADER);
-    gl.shaderSource(vs, config.vertexShader);
-    gl.compileShader(vs);
-    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {{
-      console.warn('[World] VS error:', gl.getShaderInfoLog(vs));
-      gl.deleteShader(vs);
-      throw new Error('vertex shader failed');
-    }}
-    gl.deleteShader(vs);
-
-    const fs = gl.createShader(gl.FRAGMENT_SHADER);
-    gl.shaderSource(fs, config.fragmentShader);
-    gl.compileShader(fs);
-    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {{
-      console.warn('[World] FS error:', gl.getShaderInfoLog(fs));
-      gl.deleteShader(fs);
-      throw new Error('fragment shader failed');
-    }}
-    gl.deleteShader(fs);
-
-    return new THREE.ShaderMaterial(config);
+    const mat = new THREE.ShaderMaterial({{
+      uniforms: config.uniforms,
+      vertexShader: config.vertexShader,
+      fragmentShader: config.fragmentShader,
+      lights: false,
+      side: THREE.DoubleSide,
+    }});
+    mat.needsUpdate = true;
+    return mat;
   }} catch (e) {{
-    console.warn('[World] Shader failed, fallback used:', e.message);
-    return new THREE.MeshStandardMaterial({{ color: 0x88aa66, flatShading: true }});
+    console.warn('[World] ShaderMaterial failed, solid color used:', e.message);
+    return new THREE.MeshStandardMaterial({{
+      color: fallbackColor,
+      flatShading: true,
+      roughness: 0.9,
+    }});
   }}
+}}
+
+function propFallbackColor(uniforms) {{
+  for (const key of Object.keys(uniforms || {{}})) {{
+    const val = uniforms[key] && uniforms[key].value;
+    if (val && val.isColor) return val.getHex();
+    if (val && val.isVector3) {{
+      return new THREE.Color(val.x, val.y, val.z).getHex();
+    }}
+  }}
+  return 0x7a9a5a;
 }}
 
 // ============================================================
@@ -137,10 +139,19 @@ if (!container) {{
 }}
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(`rgb(${{ATMOSPHERE.sky_color.join(',')}})`);
+const skyDay = new THREE.Color(
+  (ATMOSPHERE.sky_color?.[0] ?? 135) / 255,
+  (ATMOSPHERE.sky_color?.[1] ?? 185) / 255,
+  (ATMOSPHERE.sky_color?.[2] ?? 235) / 255
+);
+scene.background = skyDay;
 scene.fog = new THREE.FogExp2(
-  new THREE.Color(`rgb(${{ATMOSPHERE.fog_color.join(',')}})`),
-  ATMOSPHERE.fog_density ?? 0.02
+  new THREE.Color(
+    (ATMOSPHERE.fog_color?.[0] ?? 170) / 255,
+    (ATMOSPHERE.fog_color?.[1] ?? 200) / 255,
+    (ATMOSPHERE.fog_color?.[2] ?? 230) / 255
+  ),
+  Math.min(ATMOSPHERE.fog_density ?? 0.012, 0.02)
 );
 
 const camera = new THREE.PerspectiveCamera(
@@ -160,7 +171,7 @@ const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.08;
 controls.target.set(0, 1, 0);
-controls.maxPolarAngle = Math.PI * 0.49;
+controls.maxPolarAngle = Math.PI * 0.9;
 
 // Свет
 const ambient = new THREE.AmbientLight(0x8899bb, 0.6);
@@ -194,6 +205,70 @@ scene.add(fillLight);
 const worldGroup = new THREE.Group();
 scene.add(worldGroup);
 
+const skyUniforms = {{
+  uTime: {{ value: 0 }},
+  uSkyTop: {{ value: new THREE.Color(0.45, 0.72, 0.98) }},
+  uSkyHorizon: {{ value: new THREE.Color(0.78, 0.88, 0.98) }},
+  uCloud: {{ value: new THREE.Color(0.95, 0.97, 1.0) }},
+}};
+const skyMat = new THREE.ShaderMaterial({{
+  uniforms: skyUniforms,
+  side: THREE.BackSide,
+  depthWrite: false,
+  fog: false,
+  vertexShader: `
+    varying vec3 vDir;
+    void main() {{
+      vDir = position;
+      vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      gl_Position = clip.xyww;
+    }}
+  `,
+  fragmentShader: `
+    uniform float uTime;
+    uniform vec3 uSkyTop;
+    uniform vec3 uSkyHorizon;
+    uniform vec3 uCloud;
+    varying vec3 vDir;
+    float hash(vec2 p) {{
+      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    }}
+    float noise(vec2 p) {{
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      float a = hash(i);
+      float b = hash(i + vec2(1.0, 0.0));
+      float c = hash(i + vec2(0.0, 1.0));
+      float d = hash(i + vec2(1.0, 1.0));
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+    }}
+    float fbm(vec2 p) {{
+      float v = 0.0;
+      float a = 0.5;
+      for (int i = 0; i < 5; i++) {{
+        v += a * noise(p);
+        p *= 2.03;
+        a *= 0.5;
+      }}
+      return v;
+    }}
+    void main() {{
+      vec3 dir = normalize(vDir);
+      float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+      vec3 col = mix(uSkyHorizon, uSkyTop, pow(h, 0.65));
+      vec2 uv = dir.xz / max(dir.y + 0.25, 0.05);
+      float clouds = fbm(uv * 1.6 + vec2(uTime * 0.012, 0.0));
+      clouds = smoothstep(0.52, 0.78, clouds) * smoothstep(0.02, 0.28, dir.y);
+      col = mix(col, uCloud, clouds * 0.85);
+      gl_FragColor = vec4(col, 1.0);
+    }}
+  `,
+}});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(160, 24, 16), skyMat);
+sky.renderOrder = -1;
+scene.add(sky);
+
 // ============================================================
 // ЛАНДШАФТ
 // ============================================================
@@ -201,17 +276,40 @@ scene.add(worldGroup);
 
 JS_TERRAIN = """const HEIGHTMAP_B64 = "{heightmap_b64}";
 const COLORMAP_B64 = "{colormap_b64}";
+const HEIGHTMAP = {heightmap_js};
+const HEIGHTMAP_RES = {heightmap_res};
+const TERRAIN_SIZE = {terrain_size};
+const HEIGHT_SCALE = {height_scale};
+const WATER_LEVEL = {water_level};
 
-const heightTex = loadB64Texture(HEIGHTMAP_B64);
+function heightAt(x, z) {{
+  const u = THREE.MathUtils.clamp(x / TERRAIN_SIZE + 0.5, 0, 1);
+  const v = THREE.MathUtils.clamp(z / TERRAIN_SIZE + 0.5, 0, 1);
+  const fx = u * (HEIGHTMAP_RES - 1);
+  const fy = v * (HEIGHTMAP_RES - 1);
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const x1 = Math.min(HEIGHTMAP_RES - 1, x0 + 1);
+  const y1 = Math.min(HEIGHTMAP_RES - 1, y0 + 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const a = HEIGHTMAP[y0 * HEIGHTMAP_RES + x0] * (1 - tx) + HEIGHTMAP[y0 * HEIGHTMAP_RES + x1] * tx;
+  const b = HEIGHTMAP[y1 * HEIGHTMAP_RES + x0] * (1 - tx) + HEIGHTMAP[y1 * HEIGHTMAP_RES + x1] * tx;
+  return (a * (1 - ty) + b * ty) * HEIGHT_SCALE;
+}}
+
 const colorTex = loadB64Texture(COLORMAP_B64);
-
-const terrainGeo = new THREE.PlaneGeometry(20, 20, 128, 128);
+const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, HEIGHTMAP_RES - 1, HEIGHTMAP_RES - 1);
 terrainGeo.rotateX(-Math.PI / 2);
+const tPos = terrainGeo.attributes.position;
+for (let i = 0; i < tPos.count; i++) {{
+  tPos.setY(i, heightAt(tPos.getX(i), tPos.getZ(i)));
+}}
+tPos.needsUpdate = true;
+terrainGeo.computeVertexNormals();
 
 const terrainMat = new THREE.MeshStandardMaterial({{
   map: colorTex,
-  displacementMap: heightTex,
-  displacementScale: 3.0,
   flatShading: true,
   roughness: 0.92,
   metalness: 0.0,
@@ -221,6 +319,22 @@ const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow = true;
 terrain.castShadow = true;
 worldGroup.add(terrain);
+
+if (WATER_LEVEL != null) {{
+  const water = new THREE.Mesh(
+    new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 1, 1),
+    new THREE.MeshStandardMaterial({{
+      color: 0x3a7ebd,
+      transparent: true,
+      opacity: 0.62,
+      roughness: 0.2,
+      metalness: 0.1,
+    }})
+  );
+  water.rotation.x = -Math.PI / 2;
+  water.position.y = WATER_LEVEL * HEIGHT_SCALE;
+  worldGroup.add(water);
+}}
 
 """
 
@@ -235,7 +349,7 @@ const {material_var} = (function() {{
     fragmentShader: {fragment_json},
   }};
 
-  const mat = compileShader(propShader, renderer);
+  const mat = compileShader(propShader, propFallbackColor(propShader.uniforms));
   mat.side = THREE.DoubleSide;
 
   const propGeometry = {geometry_json};
@@ -285,6 +399,7 @@ function animate() {{
   requestAnimationFrame(animate);
   const t = clock.getElapsedTime();
 
+  if (skyUniforms && skyUniforms.uTime) skyUniforms.uTime.value = t;
   for (const mat of propMaterials) {{
     if (mat && mat.uniforms && mat.uniforms.uTime) {{
       mat.uniforms.uTime.value = t;
@@ -317,7 +432,7 @@ console.log('✅ World loaded: ' + WORLD_NAME);
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================
 
-def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
+def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap_js: str = "[]") -> str:
     """
     Принимает JSON-план мира + base64-карты и возвращает готовый JS-код.
     """
@@ -339,9 +454,15 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
     ))
 
     # --- Terrain ---
+    water = plan.get("terrain", {}).get("water_level")
     parts.append(JS_TERRAIN.format(
         heightmap_b64=heightmap_b64,
         colormap_b64=colormap_b64,
+        heightmap_js=heightmap_js,
+        heightmap_res=128,
+        terrain_size=20,
+        height_scale=4.0,
+        water_level="null" if water is None else float(water),
     ))
 
     # --- Props ---
@@ -363,7 +484,6 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
         # Instances
         instances = prop.get('instances', []) or []
 
-        # Shader — с fallback на случай отсутствия
         shader = prop.get('shader') or {}
         vertex = shader.get('vertex', '')
         fragment = shader.get('fragment', '')
@@ -382,7 +502,8 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str) -> str:
 
     # --- Post-process ---
     pp = plan.get('post_process', {}).get('shader')
-    has_pp = bool(pp and pp.get('vertex') and pp.get('fragment'))
+    time_of_day = (plan.get('atmosphere') or {}).get('time_of_day') or 'day'
+    has_pp = bool(pp and pp.get('vertex') and pp.get('fragment') and time_of_day != 'day')
 
     if has_pp:
         pp_block = _build_post_process_block(pp)

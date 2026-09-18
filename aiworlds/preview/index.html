@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Worlds Preview</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b0d10;
+      color: #e8e0c8;
+      font-family: Segoe UI, Tahoma, sans-serif;
+    }
+    #hud {
+      position: absolute;
+      z-index: 2;
+      left: 16px;
+      top: 16px;
+      max-width: 420px;
+      padding: 12px 14px;
+      background: rgba(12, 14, 18, 0.72);
+      border: 1px solid #6b5a32;
+      pointer-events: none;
+    }
+    #hud h1 {
+      margin: 0 0 6px;
+      font-size: 18px;
+    }
+    #hud p {
+      margin: 0;
+      font-size: 13px;
+      opacity: 0.85;
+    }
+    #world-container {
+      width: 100vw;
+      height: 100vh;
+    }
+    canvas {
+      display: block;
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="hud">
+    <h1>Зелёный Брод</h1>
+    <p>Травяная поляна с редколесьем и валунами, мягкий дневной свет, через карту течёт неглубокая река. Тихая пограничная долина для стартовой базы.</p>
+  </div>
+  <div id="world-container"></div>
+  <script type="module" src="./world.js"></script>
+</body>
+</html>

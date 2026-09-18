@@ -1,496 +1,465 @@
 """
-Клиент для VibeCodeCheap (Claude через Anthropic SDK).
-"""
-import os
-import json
-import re
-from anthropic import Anthropic
+Клиент AI: OpenAI-совместимый шлюз, модель kimi-k3.
 
+AI генерирует данные мира и GLSL-материалы. Код считает террейн
+и расставляет инстансы. Заглушки мира не используются.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import httpx
+from openai import OpenAI
+
+log = logging.getLogger(__name__)
 
 API_KEY = os.getenv(
-    "VIBECODE_API_KEY",
-    "sk-cvc-2d33e7d4a5cd24678cc3d8ac305291e471bb10550bc640ec68062b0741ecc726"
+    "AI_API_KEY",
+    os.getenv(
+        "VIBECODE_API_KEY",
+        "sk-cvc-2d33e7d4a5cd24678cc3d8ac305291e471bb10550bc640ec68062b0741ecc726",
+    ),
 )
-BASE_URL = "https://ru.cheapvibecode.ru"
-MODEL = "claude-sonnet-4-6"
+BASE_URL = os.getenv("AI_BASE_URL", "https://ru.cheapvibecode.ru/v1")
+MODEL = os.getenv("AI_MODEL", "kimi-k3")
+FAST_MODEL = os.getenv("AI_FAST_MODEL", "kimi-k3")
 
-_client = Anthropic(base_url=BASE_URL, api_key=API_KEY)
+STANDARD_VERTEX_SHADER = """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vWorldPos;
+void main() {
+  vUv = uv;
+  vNormal = normalize(normalMatrix * normal);
+  vPosition = position;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorldPos = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}"""
 
+POST_VERTEX_SHADER = """varying vec2 vUv;
+void main() {
+  vUv = uv;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}"""
 
-SYSTEM_PROMPT = r"""Ты — эксперт по Three.js, GLSL и процедурной генерации игровых
-миров в стиле PSX (PlayStation 1). Твоя задача — создать
-максимально детализированный JSON-план 3D-мира.
+JSON_RETRY_HINT = (
+    "Предыдущий ответ был пустым или невалидным JSON. "
+    "Верни ТОЛЬКО один JSON-объект, без markdown. "
+    "GLSL клади массивом строк в shader.fragment_lines и shader.vertex_lines. "
+    "Никаких сырых переносов внутри кавычек."
+)
 
-Верни ТОЛЬКО валидный JSON без markdown-оберток, без
-комментариев вне JSON.
+METADATA_SYSTEM_PROMPT = r"""Ты — арт-директор ретро-стратегий: Warcraft II/III, ранняя Dota, Civilization III.
+Генерируешь JSON-описание изометрического 3D-уровня в духе RTS/TBS 90-х–начала 2000-х:
+низкополигональные меши, палитра 16–32 цвета, террасы ландшафта, читаемые силуэты юнитов и строений.
 
-----------------------------------------------------------------
-ОБЩАЯ СТРУКТУРА
-----------------------------------------------------------------
+Верни ТОЛЬКО валидный JSON без markdown и комментариев.
 
 {
-  "world_name": "string (2-5 слов, атмосферное название)",
-  "description": "string (1-2 предложения, описывающие мир и его настроение)",
+  "world_name": "атмосферное название 2-5 слов",
+  "description": "1-2 предложения: биом, фракция, настроение",
+  "style": {
+    "era": "warcraft|dota|civ3|hybrid",
+    "palette_name": "название палитры",
+    "mood": "коротко"
+  },
   "terrain": {
-    "scale": 45,
-    "octaves": 4,
-    "seed": 42,
+    "scale": 10-100,
+    "octaves": 1-8,
+    "seed": целое,
+    "water_level": 0.22,
     "color_gradient": [
-      {"height": 0.0,  "color": [R,G,B]},
-      {"height": 0.15, "color": [R,G,B]},
-      {"height": 0.35, "color": [R,G,B]},
-      {"height": 0.55, "color": [R,G,B]},
-      {"height": 0.75, "color": [R,G,B]},
-      {"height": 1.0,  "color": [R,G,B]}
+      {"height": 0.0, "color": [R,G,B]},
+      {"height": 1.0, "color": [R,G,B]}
+    ],
+    "features": [
+      {"type": "river", "points": [[0.05, 0.4], [0.4, 0.5], [0.95, 0.6]], "width": 0.05, "depth": 0.45},
+      {"type": "basin", "center": [0.3, 0.7], "radius": 0.12, "depth": 0.35},
+      {"type": "ridge", "points": [[0.2, 0.2], [0.8, 0.25]], "width": 0.08, "height": 0.4}
     ]
   },
   "atmosphere": {
-    "fog_color": [R,G,B],
-    "fog_density": 0.015,
-    "sky_color": [R,G,B],
-    "sun_color": [R,G,B],
-    "ambient_color": [R,G,B]
+    "time_of_day": "day",
+    "clouds": true,
+    "fog_color": [170, 200, 230],
+    "fog_density": 0.01,
+    "sky_color": [135, 185, 235],
+    "sun_color": [255, 244, 220],
+    "ambient_color": [150, 170, 200]
   },
-  "props": {
-    "unique_prop_name": {
-      "geometry": {"primitives": [...]},
-      "shader": {"vertex": "...", "fragment": "...", "uniforms": {...}},
-      "instances": [
-        {"position": [x,y,z], "rotation": [0,0,0], "scale": 1.2}
-      ]
+  "prop_list": [
+    {
+      "name": "snake_case_id",
+      "category": "vegetation|structure|rock|unit_prop|magic|decoration",
+      "count": 5-40,
+      "role": "зачем объект на карте RTS"
+    }
+  ],
+  "post_process": {
+    "shader": {
+      "vertex_lines": ["varying vec2 vUv;", "void main() {", "  vUv = uv;", "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);", "}"],
+      "fragment_lines": ["uniform sampler2D tDiffuse;", "uniform float uTime;", "uniform vec2 uResolution;", "varying vec2 vUv;", "void main() {", "  vec4 color = texture2D(tDiffuse, vUv);", "  gl_FragColor = color;", "}"],
+      "uniforms": {
+        "uTint": {"type": "vec3", "value": [1.0, 0.95, 0.8]}
+      }
+    }
+  }
+}
+
+Правила:
+- color_gradient: 5-8 точек, height строго от 0.0 до 1.0, цвета 0-255. Нижние ступени = вода/ил, если есть река/озеро.
+- Палитра как в Warcraft/Civ3: трава, грязь, песок, камень, вода отдельными ступенями, не фотореализм.
+- Ландшафт НЕ только шум. Обязательно 1-4 features в UV 0..1 (x=u, y=v):
+  river: points[], width, depth — прорезает русло
+  lake/basin: center[u,v], radius, depth — впадина
+  ridge: points[], width, height — хребет
+  plateau: center, radius, height — плоскогорье
+  mound: center, radius, height — холм
+- Код сам вырежет эти формы на heightmap. Клади реку/ущелье/озеро если промпт этого просит.
+- water_level 0..1, если есть вода; иначе null.
+- Небо ДНЁМ синее: sky_color около [135,185,235], fog_color около [170,200,230], fog_density <= 0.015.
+  time_of_day=sunset/night только если промпт явно про закат/ночь.
+- post_process: лёгкая виньетка + дитеринг. ЗАПРЕЩЕНО красить кадр в красный/оранжевый.
+  tint максимум vec3(1.02, 1.0, 0.98). Небо должно остаться голубым.
+- prop_list: 4-8 уникальных типов под КОНКРЕТНЫЙ промпт.
+- Каждый проп — смысл на тактической карте (дерево-блокер, шахта, башня, ферма).
+- Vertex пост-процесса: varying vec2 vUv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+- Не объявляй uTime в uniforms. tDiffuse не клади в uniforms.
+- GLSL ES 1.0: без #version, без in/out, только varying.
+- Шейдеры ТОЛЬКО как vertex_lines / fragment_lines (массив строк).
+"""
+
+PROP_SYSTEM_PROMPT = r"""Ты — теххудожник ретро-RTS (Warcraft, Dota, Civilization III).
+Пишешь ОДИН проп: низкополигональная геометрия из примитивов + уникальный GLSL ES 1.0 материал.
+
+Верни ТОЛЬКО валидный JSON без markdown.
+
+{
+  "name": "тот же id",
+  "geometry": {
+    "primitives": [
+      {
+        "type": "cylinder",
+        "params": {"rTop": 0.12, "rBottom": 0.18, "height": 1.4, "segments": 6},
+        "position": [0, 0.7, 0],
+        "rotation": [0, 0, 0],
+        "scale": 1
+      }
+    ]
+  },
+  "shader": {
+    "vertex_lines": ["varying vec2 vUv;", "varying vec3 vNormal;", "varying vec3 vPosition;", "varying vec3 vWorldPos;", "void main() {", "  vUv = uv;", "  vNormal = normalize(normalMatrix * normal);", "  vPosition = position;", "  vec4 wp = modelMatrix * vec4(position, 1.0);", "  vWorldPos = wp.xyz;", "  gl_Position = projectionMatrix * viewMatrix * wp;", "}"],
+    "fragment_lines": ["uniform float uTime;", "varying vec2 vUv;", "varying vec3 vNormal;", "varying vec3 vPosition;", "void main() {", "  vec3 color = vec3(0.2, 0.45, 0.15);", "  gl_FragColor = vec4(color, 1.0);", "}"],
+    "uniforms": {
+      "uColorA": {"type": "vec3", "value": [0.2, 0.45, 0.15]}
     }
   },
-  "post_process": {
-    "shader": {"vertex": "...", "fragment": "...", "uniforms": {...}}
+  "instances": {
+    "count": 20,
+    "distribution": "scattered|forest|cluster|river_line",
+    "scale_range": [0.7, 1.4]
   }
 }
 
-Пояснения к полям:
-
-  terrain.scale        10-100, меньше = крупные формы, больше = мелкие
-  terrain.octaves      1-8: 1-2 равнина, 3-4 холмы, 5-6 горы, 7-8 хаос
-  terrain.color_gradient  5-8 точек, ОБЯЗАТЕЛЬНО от 0.0 до 1.0
-  atmosphere.fog_density  0.005 (ясно) — 0.06 (густой туман)
-
-
-----------------------------------------------------------------
-ТРЕБОВАНИЯ К ДЕТАЛИЗАЦИИ
-----------------------------------------------------------------
-
-1. ТЕРРЕЙН (color_gradient)
-   - Минимум 5 точек, оптимально 6-8.
-   - Градиент должен отражать биомы: вода -> пляж -> трава ->
-     лес -> скалы -> снег -> вершины.
-   - Цвета плавно переходят, без резких скачков (кроме
-     естественных границ, например вода/суша).
-   - Каждый цвет насыщенный, но в рамках палитры мира
-     (закат = тёплый, ночь = холодный).
-
-2. ПРОПСЫ (props)
-   Создай ОТ 4 ДО 8 РАЗЛИЧНЫХ ПРОПСОВ в зависимости от промпта.
-   Каждый пропс — уникален.
-
-   Обязательные категории:
-     - Растительность (2-3 вида): деревья разных форм, кусты,
-       трава, цветы, грибы.
-     - Камни/рельеф (1-2 вида): валуны, скалы, сталагмиты.
-     - Детали мира (1-2 вида): руины, кристаллы, фонари, кости,
-       сундуки, цветущие растения.
-     - Атмосферные элементы (1 вид): светящиеся кристаллы,
-       магические сферы, факелы, грибы со свечением.
-
-3. КОЛИЧЕСТВО INSTANCES
-     - Трава/мелкие кусты:       40-80 instances
-     - Деревья:                  15-30 instances
-     - Камни:                    10-20 instances
-     - Руины/крупные объекты:     3-8  instances
-     - Особые объекты:            5-15 instances
-       (кристаллы, фонари)
-
-   Расположение instances разнообразное, с разными scale
-   (0.7–1.5) и rotation (0–360°).
-
-4. СТРУКТУРА PROPS (geometry)
-   Каждый пропс собирай из НЕСКОЛЬКИХ примитивов (3-6 штук),
-   чтобы он выглядел детально:
-     - Дерево = ствол (cylinder) + 2-3 кроны (cone/sphere)
-       + детали (ветки, листья).
-     - Кристалл = основной кристалл (octahedron) + мелкие
-       осколки (tetrahedron) рядом.
-     - Камень = большой валун (dodecahedron) + 2-3 мелких
-       камня вокруг.
-     - Руина = основание (box) + 2 колонны (cylinder)
-       + разрушенная крыша (box с rotation).
-
-5. ШЕЙДЕРЫ ПРОПСОВ — МАКСИМАЛЬНАЯ ДЕТАЛИЗАЦИЯ
-
-   Каждый fragment shader должен включать 3-5 из следующих
-   техник:
-
-   --- Анимация и движение ---
-     * Пульсация:        0.5 + 0.5 * sin(uTime * freq)
-     * Волны:            sin(vUv.x * N + uTime * speed)
-                         * sin(vUv.y * M + uTime * speed2)
-     * Дрожание:         sin(vPosition.y * N + uTime) * amp
-     * Вращение UV:      vec2 rotated = mat2(cos(a), -sin(a),
-                         sin(a), cos(a)) * (vUv - 0.5) + 0.5
-
-   --- Цвет и градиенты ---
-     * Многослойный mix: mix(mix(c1, c2, t1), c3, t2)
-     * Позиционный:       smoothstep(0.0, 1.0, vPosition.y)
-     * Цветовые пятна:    sin(vWorldPos.x * 3.0)
-                         * cos(vWorldPos.z * 3.0)
-
-   --- Процедурный шум (без текстур) ---
-     * Hash-шум:         fract(sin(dot(uv, vec2(12.9898, 78.233)))
-                         * 43758.5453)
-     * Value noise:      интерполяция hash
-     * Треугольный:      abs(fract(x) - 0.5)
-
-   --- Освещение и объём ---
-     * Fresnel:          pow(1.0 - abs(dot(vNormal, viewDir)), p)
-     * Псевдо-освещение: dot(vNormal, normalize(vec3(1,2,1)))
-     * Краевое свечение: smoothstep(0.3, 0.7, fresnel)
-
-   --- PSX-эстетика ---
-     * Дитеринг:         color += (fract(sin(dot(gl_FragCoord.xy,
-                         vec2(12.9898, 78.233))) * 43758.5453)
-                         - 0.5) * 0.04
-     * Квантование:      floor(color * 32.0) / 32.0
-     * Аффинное UV:      vUv + sin(vUv.y * 100.0) * 0.001
-
-   --- Прозрачность и свечение ---
-     * Alpha + Fresnel:  gl_FragColor = vec4(color,
-                         fresnel * 0.9 + 0.1)
-     * Эмиссия:          color += emissiveColor * intensity
-     * Мерцание:         intensity * (0.8 + 0.2 * sin(uTime * 10.0))
-
-
-----------------------------------------------------------------
-ПРИМЕРЫ КАЧЕСТВЕННЫХ ШЕЙДЕРОВ
-----------------------------------------------------------------
-
-=== Светящееся дерево с магической кроной ===
-
-uniform float uTime;
-varying vec2 vUv;
-varying vec3 vPosition;
-varying vec3 vNormal;
-
-void main() {
-  float h = clamp(vPosition.y / 2.0, 0.0, 1.0);
-
-  // Ствол с текстурой коры через шум
-  float barkNoise = fract(sin(dot(vUv * 10.0,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  vec3 trunkColor = mix(vec3(0.25, 0.15, 0.08),
-    vec3(0.4, 0.25, 0.15), barkNoise);
-
-  // Крона с пульсирующим свечением
-  float pulse = 0.7 + 0.3 * sin(uTime * 2.0 + vPosition.x * 3.0);
-  float leafNoise = sin(vUv.x * 20.0) * sin(vUv.y * 20.0)
-    * 0.5 + 0.5;
-  vec3 leafColor = mix(vec3(0.15, 0.6, 0.25),
-    vec3(0.4, 1.0, 0.5), leafNoise) * pulse;
-
-  // Смешивание по высоте
-  vec3 color = mix(trunkColor, leafColor,
-    smoothstep(0.35, 0.55, h));
-
-  // Дитеринг PSX
-  float dither = fract(sin(dot(gl_FragCoord.xy,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  color += (dither - 0.5) * 0.03;
-
-  gl_FragColor = vec4(color, 1.0);
-}
-
-
-=== Вода с рябью и течением ===
-
-uniform float uTime;
-uniform vec3 uWaterColor;
-varying vec2 vUv;
-varying vec3 vNormal;
-
-void main() {
-  // Многослойные волны
-  float wave1 = sin(vUv.x * 15.0 + uTime * 1.5) * 0.5 + 0.5;
-  float wave2 = sin(vUv.y * 20.0 - uTime * 2.0) * 0.5 + 0.5;
-  float wave3 = sin((vUv.x + vUv.y) * 25.0 + uTime * 3.0)
-    * 0.5 + 0.5;
-  float waves = (wave1 + wave2 + wave3) / 3.0;
-
-  // Глубина (по краям темнее)
-  float depth = smoothstep(0.0, 0.3, vUv.x)
-    * smoothstep(1.0, 0.7, vUv.x);
-
-  vec3 shallow = vec3(0.3, 0.7, 0.9);
-  vec3 deep = vec3(0.05, 0.2, 0.4);
-  vec3 color = mix(deep, shallow, waves * depth);
-
-  // Fresnel для отражений
-  vec3 viewDir = normalize(cameraPosition - vPosition);
-  float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 2.0);
-  color += fresnel * 0.4;
-
-  // Дитеринг
-  float dither = fract(sin(dot(gl_FragCoord.xy,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  color += (dither - 0.5) * 0.02;
-
-  gl_FragColor = vec4(color, 0.85 + waves * 0.1);
-}
-
-
-=== Кристалл с преломлением ===
-
-uniform float uTime;
-uniform vec3 uCrystalColor;
-varying vec2 vUv;
-varying vec3 vNormal;
-varying vec3 vPosition;
-
-void main() {
-  // Fresnel для граней
-  vec3 viewDir = normalize(cameraPosition - vPosition);
-  float fresnel = pow(1.0 - abs(dot(vNormal, viewDir)), 3.0);
-
-  // Пульсация
-  float pulse = 0.8 + 0.2 * sin(uTime * 3.0);
-
-  // Многослойное свечение
-  vec3 core = uCrystalColor * 1.5;
-  vec3 edge = uCrystalColor * 3.0;
-  vec3 color = mix(core, edge, fresnel) * pulse;
-
-  // Внутренние блики
-  float sparkle = pow(max(0.0,
-    sin(vUv.x * 50.0 + uTime) * sin(vUv.y * 50.0)), 8.0);
-  color += sparkle * 0.5;
-
-  gl_FragColor = vec4(color, 0.9);
-}
-
-
-=== Камень / руина с текстурой ===
-
-uniform float uTime;
-varying vec2 vUv;
-varying vec3 vNormal;
-varying vec3 vWorldPos;
-
-float hash(vec2 p) {
-  return fract(sin(dot(p, vec2(12.9898, 78.233)))
-    * 43758.5453);
-}
-
-void main() {
-  // Многослойный шум для камня
-  float n1 = hash(floor(vUv * 8.0));
-  float n2 = hash(floor(vUv * 16.0 + 100.0));
-  float n3 = hash(floor(vUv * 32.0 + 200.0));
-  float stone = n1 * 0.5 + n2 * 0.3 + n3 * 0.2;
-
-  vec3 dark = vec3(0.25, 0.22, 0.2);
-  vec3 light = vec3(0.6, 0.55, 0.5);
-  vec3 color = mix(dark, light, stone);
-
-  // Трещины (тёмные линии)
-  float cracks = smoothstep(0.95, 1.0, n2);
-  color = mix(color, vec3(0.1), cracks);
-
-  // Мох в трещинах (зелёный)
-  float moss = smoothstep(0.85, 0.95, n1)
-    * (0.5 + 0.5 * sin(vWorldPos.y * 5.0));
-  color = mix(color, vec3(0.2, 0.4, 0.15), moss * 0.5);
-
-  // Псевдо-освещение
-  float light_dot = dot(vNormal,
-    normalize(vec3(1.0, 2.0, 1.0))) * 0.5 + 0.5;
-  color *= light_dot;
-
-  // Дитеринг
-  float dither = fract(sin(dot(gl_FragCoord.xy,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  color += (dither - 0.5) * 0.04;
-
-  gl_FragColor = vec4(color, 1.0);
-}
-
-
-----------------------------------------------------------------
-POST_PROCESS — АТМОСФЕРА МИРА
-----------------------------------------------------------------
-
-Post-process формирует уникальное настроение. Включи 4-6
-техник.
-
-ОБЯЗАТЕЛЬНЫЕ:
-  * Виньетка:
-      color.rgb *= smoothstep(1.2, 0.3,
-        length(vUv - 0.5) * 2.0) * 0.4 + 0.6;
-  * Дитеринг PSX:
-      color.rgb += (fract(sin(dot(gl_FragCoord.xy,
-        vec2(12.9898, 78.233))) * 43758.5453) - 0.5) * 0.03;
-  * Цветокоррекция под мир (тёплый tint для заката, холодный
-    для ночи, зелёный для болота).
-
-ОПЦИОНАЛЬНЫЕ ПО КОНТЕКСТУ:
-  * Хроматическая аберрация (для магии/снов):
-      color.r = texture2D(tDiffuse,
-        vUv + vec2(0.003, 0.0)).r;
-  * CRT-полосы (для ретро):
-      color.rgb *= 0.9 + 0.1 * sin(vUv.y * uResolution.y * 3.14);
-  * Bloom (для ярких миров): размытие ярких участков
-    через 4-8 сэмплов.
-  * Зернистость (для старых игр):
-      color.rgb += (fract(sin(dot(vUv,
-        vec2(12.9898, 78.233)) + uTime) * 43758.5453)
-        - 0.5) * 0.05;
-  * Цветовая градация:
-      color.rgb = pow(color.rgb, vec3(0.9, 1.0, 1.1));
-    (для холодного, наоборот для тёплого).
-
-
-=== ПРИМЕР пост-процесса для "волшебного леса" ===
-
-uniform sampler2D tDiffuse;
-uniform float uTime;
-uniform vec2 uResolution;
-varying vec2 vUv;
-
-void main() {
-  vec4 color = texture2D(tDiffuse, vUv);
-
-  // Хроматическая аберрация по краям (магия)
-  float aberration = 0.003 * length(vUv - 0.5);
-  color.r = texture2D(tDiffuse,
-    vUv + vec2(aberration, 0.0)).r;
-  color.b = texture2D(tDiffuse,
-    vUv - vec2(aberration, 0.0)).b;
-
-  // Тёплый tint (закат)
-  color.rgb *= vec3(1.1, 1.0, 0.9);
-
-  // Виньетка
-  float vignette = smoothstep(1.0, 0.3,
-    length(vUv - 0.5) * 2.0);
-  color.rgb *= mix(0.5, 1.0, vignette);
-
-  // Временные зерна (для атмосферы)
-  float grain = fract(sin(dot(vUv + uTime * 0.001,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  color.rgb += (grain - 0.5) * 0.04;
-
-  // Дитеринг PSX
-  float dither = fract(sin(dot(gl_FragCoord.xy,
-    vec2(12.9898, 78.233))) * 43758.5453);
-  color.rgb += (dither - 0.5) * 0.03;
-
-  gl_FragColor = color;
-}
-
-
-----------------------------------------------------------------
-ДОСТУПНЫЕ ПРИМИТИВЫ DSL
-----------------------------------------------------------------
-
-Каждый примитив может иметь position, rotation (в градусах),
-scale.
-
-  * cylinder:    {rTop, rBottom, height, segments: 6-8}
-  * cone:        {radius, height, segments: 6-8}
-  * box:         {width, height, depth}
-  * sphere:      {radius, widthSegments: 6-8, heightSegments: 4-6}
-  * torus:       {radius, tube, radialSegments: 6-8,
-                  tubularSegments: 12-16}
-  * octahedron:  {radius}
-  * icosahedron: {radius}
-  * dodecahedron:{radius}
-  * tetrahedron: {radius}
-  * plane:       {width, height}
-
-Для PSX-эстетики ВСЕГДА используй минимальные segments (6-8).
-
-
-----------------------------------------------------------------
-UNIFORMS
-----------------------------------------------------------------
-
-Все uniforms должны быть объявлены в "uniforms" с полями
-type и value.
-
-Доступные типы: float, int, vec2, vec3, vec4, color.
-
-uTime — добавляется автоматически, не объявляй его.
-
-Примеры:
-
-  "uniforms": {
-    "uColor":      {"type": "vec3",  "value": [0.3, 0.7, 0.4]},
-    "uIntensity":  {"type": "float", "value": 1.5},
-    "uWaterColor": {"type": "color", "value": [0.1, 0.3, 0.6]}
-  }
-
-
-----------------------------------------------------------------
-ОГРАНИЧЕНИЯ GLSL
-----------------------------------------------------------------
-
-  * GLSL ES 1.0: только varying, никаких in/out, никаких
-    #version.
-  * Доступные встроенные функции: sin, cos, tan, fract, floor,
-    ceil, mix, smoothstep, clamp, min, max, abs, pow, sqrt,
-    length, normalize, dot, cross, reflect, refract.
-  * Доступные встроенные переменные vertex-шейдера: position,
-    normal, uv, modelMatrix, viewMatrix, projectionMatrix,
-    normalMatrix.
-  * Доступные встроенные переменные fragment-шейдера:
-    gl_FragCoord, cameraPosition.
-  * Максимум 80 строк на шейдер.
-  * В vertex-шейдере ОБЯЗАТЕЛЬНО объявляй как минимум: vUv,
-    vNormal, vPosition, vWorldPos (по мере использования во
-    fragment).
-
-
-----------------------------------------------------------------
-ФИНАЛЬНЫЕ ТРЕБОВАНИЯ
-----------------------------------------------------------------
-
-  1. Каждый шейдер уникален — не копируй структуру между
-     пропсами.
-  2. Кроны деревьев, листья, трава — анимируй (uTime).
-  3. Камни и руины — сделай шум/текстуру.
-  4. Кристаллы и магические объекты — добавь свечение и
-     пульсацию.
-  5. Вода — волны, fresnel, прозрачность.
-  6. Post-process — уникальное настроение мира.
-  7. Не используй внешние текстуры (только процедурный шум).
-  8. Все цвета — в диапазоне 0.0–1.0 (для vec) или 0–255
-     (для terrain.color_gradient и atmosphere).
-
-Создай мир по запросу пользователя. Будь креативным и детальным!"""
-
-
-def generate_world_plan(user_prompt: str) -> dict:
-    """Вызывает Claude, парсит JSON, возвращает план."""
-    message = _client.messages.create(
-        model=MODEL,
-        max_tokens=8192,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_prompt}]
+Примитивы: box, sphere, cylinder, cone, torus, octahedron, icosahedron, dodecahedron, tetrahedron, plane.
+segments всегда 6-8 (ретро-силуэт). Проп = 3-6 примитивов.
+
+МАТЕРИАЛ (fragment) — это главное:
+- Процедурный, без внешних текстур.
+- Стилистика: палитра Warcraft/Dota/Civ3, плоское освещение, дитеринг, квантование цвета.
+- 3-5 техник: hash-шум, fresnel, пульс uTime, дитеринг, градиент по vPosition.y, domain warp UV, псевдо-ламберт.
+- Уникальный шейдер под ЭТОТ объект (кора, руны, золото шахты, слизь, лёд, кирпич, листва). Не универсальный серый.
+- GLSL ES 1.0: varying, gl_FragColor, без #version, без texture2D кроме если сам не используешь карты.
+- Не объявляй uTime в uniforms.
+- JSON должен парситься json.loads без правок. Шейдеры только vertex_lines/fragment_lines (массив строк). Не вставляй GLSL куском с переносами внутри кавычек.
+- vertex_lines можно опустить — код подставит стандартный vertex.
+"""
+
+_http_timeout = httpx.Timeout(600.0, connect=10.0)
+_client = OpenAI(
+    api_key=API_KEY,
+    base_url=BASE_URL,
+    timeout=_http_timeout,
+    max_retries=1,
+)
+
+
+class AIGenerationError(RuntimeError):
+    """AI не вернул пригодный план мира."""
+
+
+def _strip_fences(text: str) -> str:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        raw = raw.rsplit("```", 1)[0].strip()
+    return raw
+
+
+def _extract_json_object(text: str) -> str:
+    start = text.find("{")
+    if start < 0:
+        raise AIGenerationError("В ответе AI нет JSON-объекта")
+    depth = 0
+    in_string = False
+    escape = False
+    for index, char in enumerate(text[start:], start):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return text[start:]
+
+
+def _escape_controls_in_strings(text: str) -> str:
+    out = []
+    in_string = False
+    escape = False
+    for char in text:
+        if in_string:
+            if escape:
+                out.append(char)
+                escape = False
+            elif char == "\\":
+                out.append(char)
+                escape = True
+            elif char == '"':
+                out.append(char)
+                in_string = False
+            elif char == "\n":
+                out.append("\\n")
+            elif char == "\r":
+                continue
+            elif char == "\t":
+                out.append("\\t")
+            elif ord(char) < 32:
+                out.append(f"\\u{ord(char):04x}")
+            else:
+                out.append(char)
+            continue
+        out.append(char)
+        if char == '"':
+            in_string = True
+    return "".join(out)
+
+
+def _repair_json(text: str) -> str:
+    repaired = _escape_controls_in_strings(text)
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    return repaired
+
+
+def _parse_json(text: str) -> dict:
+    raw = _extract_json_object(_strip_fences(text))
+    candidates = [raw, _repair_json(raw)]
+    last_error = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+            if not isinstance(data, dict):
+                raise AIGenerationError("JSON AI должен быть объектом")
+            return _normalize_shader_fields(data)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    raise AIGenerationError(f"AI вернул невалидный JSON: {last_error}") from last_error
+
+
+def _join_shader_lines(value) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(line) for line in value)
+    if isinstance(value, str):
+        return value
+    return ""
+
+
+def _normalize_shader_fields(data: dict) -> dict:
+    shader = data.get("shader")
+    if isinstance(shader, dict):
+        if not shader.get("fragment"):
+            shader["fragment"] = _join_shader_lines(shader.get("fragment_lines"))
+        if not shader.get("vertex"):
+            shader["vertex"] = _join_shader_lines(shader.get("vertex_lines"))
+        data["shader"] = shader
+    post = data.get("post_process")
+    if isinstance(post, dict) and isinstance(post.get("shader"), dict):
+        post_shader = post["shader"]
+        if not post_shader.get("fragment"):
+            post_shader["fragment"] = _join_shader_lines(post_shader.get("fragment_lines"))
+        if not post_shader.get("vertex"):
+            post_shader["vertex"] = _join_shader_lines(post_shader.get("vertex_lines"))
+        post["shader"] = post_shader
+        data["post_process"] = post
+    return data
+
+
+def _chat(
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    max_tokens: int,
+    label: str,
+    attempts: int = 3,
+) -> dict:
+    started = time.perf_counter()
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    last_error = None
+    for attempt in range(1, attempts + 1):
+        in_size = sum(len(item.get("content") or "") for item in messages)
+        log.info(
+            "AI request [%s] model=%s attempt=%s in_chars=%s max_tokens=%s",
+            label, model, attempt, in_size, max_tokens,
+        )
+        try:
+            kwargs = {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": 0.7 if attempt == 1 else 0.3,
+            }
+            response = _client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            log.exception("AI HTTP error [%s] attempt=%s", label, attempt)
+            last_error = AIGenerationError(f"Ошибка запроса к AI ({label}): {exc}")
+            time.sleep(min(2 * attempt, 6))
+            continue
+
+        content = ""
+        if response.choices:
+            content = response.choices[0].message.content or ""
+        log.info(
+            "AI response [%s] attempt=%s out_chars=%s time=%.2fs",
+            label, attempt, len(content), time.perf_counter() - started,
+        )
+        if not content.strip():
+            last_error = AIGenerationError(f"Пустой ответ AI ({label})")
+            log.warning("Empty AI response [%s] attempt=%s, retry", label, attempt)
+            time.sleep(min(2 * attempt, 6))
+            messages.append({"role": "user", "content": JSON_RETRY_HINT})
+            continue
+        try:
+            return _parse_json(content)
+        except AIGenerationError as exc:
+            last_error = exc
+            log.warning("JSON parse failed [%s] attempt=%s: %s", label, attempt, exc)
+            messages.append({"role": "assistant", "content": content[:8000]})
+            messages.append({"role": "user", "content": JSON_RETRY_HINT})
+    raise last_error or AIGenerationError(f"Не удалось получить JSON от AI ({label})")
+
+
+def generate_world_metadata(user_prompt: str, model: str | None = None) -> dict:
+    """Этап 1: метаданные мира, террейн, атмосфера, список пропсов, пост-процесс."""
+    chosen = model or MODEL
+    user = (
+        "Сгенерируй метаданные ретро-RTS уровня по промпту пользователя.\n"
+        "Промпт:\n"
+        f"{user_prompt.strip()}\n"
+        "Подбери биом, features ландшафта (река/впадина/хребет если уместно), "
+        "синее дневное небо если не сказано иное, 4-8 пропсов и мягкий пост-процесс."
     )
+    data = _chat(METADATA_SYSTEM_PROMPT, user, chosen, 4000, "metadata")
+    if not data.get("prop_list"):
+        raise AIGenerationError("AI не вернул prop_list")
+    if not isinstance(data["prop_list"], list) or len(data["prop_list"]) < 4:
+        raise AIGenerationError("Нужно минимум 4 пропа в prop_list")
+    if not data.get("post_process", {}).get("shader", {}).get("fragment"):
+        raise AIGenerationError("AI не вернул fragment шейдер пост-процесса")
+    return data
 
-    text = message.content[0].text.strip()
 
-    # Убираем markdown-обёртки
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+def generate_prop(user_prompt: str, world_meta: dict, prop_spec: dict, model: str | None = None) -> dict:
+    """Этап 2: геометрия + уникальный GLSL-материал одного пропа."""
+    chosen = model or MODEL
+    spec_json = json.dumps(prop_spec, ensure_ascii=False)
+    style = json.dumps(
+        {
+            "world_name": world_meta.get("world_name"),
+            "description": world_meta.get("description"),
+            "style": world_meta.get("style"),
+            "atmosphere": world_meta.get("atmosphere"),
+        },
+        ensure_ascii=False,
+    )
+    user = (
+        f"Мир: {style}\n"
+        f"Промпт игрока: {user_prompt.strip()}\n"
+        f"Сгенерируй ТОЛЬКО этот проп: {spec_json}\n"
+        "Материал должен быть уникальным и стилизованным под ретро-RTS."
+    )
+    data = _chat(PROP_SYSTEM_PROMPT, user, chosen, 4000, f"prop:{prop_spec.get('name')}")
+    name = data.get("name") or prop_spec.get("name")
+    data["name"] = name
+    primitives = (data.get("geometry") or {}).get("primitives") or []
+    if len(primitives) < 3:
+        raise AIGenerationError(f"Проп {name}: нужно 3-6 примитивов, получено {len(primitives)}")
+    fragment = (data.get("shader") or {}).get("fragment") or ""
+    if len(fragment.strip()) < 40:
+        raise AIGenerationError(f"Проп {name}: пустой или слишком короткий fragment shader")
+    shader = data.setdefault("shader", {})
+    if not (shader.get("vertex") or "").strip():
+        shader["vertex"] = STANDARD_VERTEX_SHADER
+    return data
 
-    # Ищем первый { и последний } — на случай мусора вокруг
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if m:
-        text = m.group(0)
 
-    return json.loads(text)
+def generate_props_parallel(
+    user_prompt: str,
+    world_meta: dict,
+    model: str | None = None,
+    max_workers: int = 3,
+) -> dict:
+    """Параллельно генерирует все пропсы. Упавший проп пропускается; если все упали — ошибка."""
+    prop_list = world_meta["prop_list"][:8]
+    props = {}
+    errors = []
+    started = time.perf_counter()
+    log.info("Prop generation start count=%s workers=%s", len(prop_list), max_workers)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(generate_prop, user_prompt, world_meta, spec, model): spec
+            for spec in prop_list
+        }
+        for future in as_completed(futures):
+            spec = futures[future]
+            name = spec.get("name", "?")
+            try:
+                prop = future.result()
+                props[prop["name"]] = prop
+                log.info("Prop ready: %s", prop["name"])
+            except Exception as exc:
+                log.exception("Prop failed: %s", name)
+                errors.append(f"{name}: {exc}")
+
+    elapsed = time.perf_counter() - started
+    log.info("Prop generation done ok=%s fail=%s time=%.2fs", len(props), len(errors), elapsed)
+    if not props:
+        raise AIGenerationError("Ни один проп не сгенерировался: " + "; ".join(errors))
+    return props
+
+
+def generate_world_plan(user_prompt: str, model: str | None = None) -> dict:
+    """Полный AI-план: метаданные + пропсы. Совместимо со старым вызовом."""
+    meta = generate_world_metadata(user_prompt, model=model)
+    props = generate_props_parallel(user_prompt, meta, model=model)
+    meta["props"] = props
+    return meta
