@@ -22,7 +22,7 @@ DJANGO_DIR = ROOT / "aiworlds"
 PREVIEW_DIR = ROOT / "preview"
 
 DEFAULT_PROMPT = (
-  "Волшебный лес с древними фиолетовыми деревьями, светящимися грибами"
+  "пустыня с кактусами"
 )
 
 INDEX_HTML = """<!DOCTYPE html>

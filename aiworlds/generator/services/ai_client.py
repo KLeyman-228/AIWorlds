@@ -63,8 +63,8 @@ METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dot
 Ключи: n имя, d описание, t террейн, tm цвета ландшафта, a атмосфера, p пропы, pp постпроцесс.
 t.w вода 0.12-0.22. t.g 6 ретро-ступеней. t.f: rv река, lk озеро.
 tm: grass/dirt/rock 0-1. ts (кастомный fragment ландшафта) пиши ТОЛЬКО если биом нельзя описать tm (лава, снег, кристалл). Иначе tm хватает.
-Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower, mushroom, crystal, ruin, hay.
-p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower|mushroom|crystal|ruin|hay ИЛИ "x" если нужен кастомный меш/шейдер.
+Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower, mushroom, crystal, ruin, hay, cactus.
+p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower|mushroom|crystal|ruin|hay|cactus ИЛИ "x" если нужен кастомный меш/шейдер.
 params: size 0.6-1.6, em 0-1.5 (свечение, 0 по умолчанию). дерево: bark, leaf. камень/руина: rock. цветок: petal, stem. гриб: cap, stem. кристалл: crystal + em. стог: hay.
 Кастом (tpl=x) только если заготовки не хватает (мост, статуя, уникальный меш). Для свечения не нужен custom — ставь em.
 a.td day, sk голубой. 4-6 пропов count<=14. Не делай проп-поляну.

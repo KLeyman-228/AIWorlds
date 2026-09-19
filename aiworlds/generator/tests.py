@@ -4,7 +4,7 @@ from generator.services.ai_client import _parse_json
 from generator.services.instances import place_instances
 from generator.services.templates import instantiate_prop, resolve_template_id, wants_custom
 from generator.services.terrain import apply_features, generate_color_map, generate_heightmap
-from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan
+from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan, _ground_geometry
 
 
 class JsonParseTests(SimpleTestCase):
@@ -200,6 +200,33 @@ class ValidatorTests(SimpleTestCase):
         self.assertGreater(plan["atmosphere"]["sky_color"][2], plan["atmosphere"]["sky_color"][0])
         self.assertEqual(len(plan["terrain"]["features"]), 1)
 
+    def test_gradient_from_material_when_missing(self):
+        plan = validate_plan(
+            {
+                "world_name": "Dunes",
+                "terrain": {
+                    "scale": 40,
+                    "octaves": 3,
+                    "seed": 1,
+                    "material": {
+                        "grass": [0.72, 0.55, 0.22],
+                        "dirt": [0.55, 0.38, 0.16],
+                        "rock": [0.45, 0.40, 0.32],
+                    },
+                },
+                "atmosphere": {
+                    "fog_color": [200, 180, 140],
+                    "fog_density": 0.01,
+                    "sky_color": [135, 185, 235],
+                    "sun_color": [255, 240, 200],
+                    "ambient_color": [160, 140, 110],
+                    "time_of_day": "day",
+                },
+            }
+        )
+        self.assertGreaterEqual(len(plan["terrain"]["color_gradient"]), 2)
+        self.assertEqual(plan["terrain"]["color_gradient"][0]["color"], [140, 97, 41])
+
     def test_nested_feature_center(self):
         plan = validate_plan(
             {
@@ -231,6 +258,29 @@ class ValidatorTests(SimpleTestCase):
         )
         self.assertEqual(plan["terrain"]["features"][0]["center"], [0.4, 0.6])
         self.assertAlmostEqual(plan["terrain"]["features"][0]["radius"], 0.1)
+
+    def test_grounds_floating_cactus(self):
+        geo = _ground_geometry(
+            {
+                "primitives": [
+                    {
+                        "type": "cylinder",
+                        "params": {"rTop": 0.12, "rBottom": 0.16, "height": 1.4, "segments": 6},
+                        "position": [0.0, 1.2, 0.0],
+                    },
+                    {
+                        "type": "sphere",
+                        "params": {"radius": 0.18},
+                        "position": [0.0, 2.0, 0.0],
+                    },
+                ]
+            }
+        )
+        bottoms = []
+        for prim in geo["primitives"]:
+            half = 0.7 if prim["type"] == "cylinder" else 0.18
+            bottoms.append(prim["position"][1] - half)
+        self.assertAlmostEqual(min(bottoms), -0.03, places=2)
 
     def test_expands_instance_rules(self):
         props = validate_and_place_props(

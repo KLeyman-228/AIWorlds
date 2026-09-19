@@ -744,9 +744,9 @@ def _stabilize_terrain_fragment(src: str) -> str:
 def _is_tree_prop(name: str, geometry: dict, template: str | None = None) -> bool:
     lowered = str(name or "").lower()
     tmpl = str(template or "").lower()
-    if tmpl in ("oak", "birch", "pine", "bush", "flower", "mushroom"):
+    if tmpl in ("oak", "birch", "pine", "bush", "flower", "mushroom", "cactus"):
         return True
-    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow", "bush", "flower", "mushroom")):
+    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow", "bush", "flower", "mushroom", "cactus")):
         return True
     types = [str(p.get("type") or "") for p in (geometry or {}).get("primitives") or []]
     has_trunk = "cylinder" in types

@@ -71,27 +71,10 @@ def _validate_terrain(terrain) -> dict:
     except (TypeError, ValueError):
         raise PlanValidationError("terrain.seed должен быть целым") from None
 
-    gradient = terrain.get("color_gradient")
-    if not isinstance(gradient, list) or len(gradient) < 2:
-        raise PlanValidationError("color_gradient: минимум 2 точки от AI")
-    cleaned = []
-    for point in gradient:
-        if not isinstance(point, dict):
-            continue
-        try:
-            height = float(point["height"])
-            color = [int(c) for c in point["color"][:3]]
-        except (KeyError, TypeError, ValueError):
-            continue
-        cleaned.append(
-            {
-                "height": max(0.0, min(1.0, height)),
-                "color": [max(0, min(255, c)) for c in color],
-            }
-        )
-    if len(cleaned) < 2:
-        raise PlanValidationError("color_gradient не содержит валидных точек")
-    terrain["color_gradient"] = cleaned
+    terrain["color_gradient"] = _clean_gradient(
+        terrain.get("color_gradient"),
+        terrain.get("material"),
+    )
     terrain["features"] = _validate_features(terrain.get("features"))
     terrain["water_level"] = _optional_float(terrain.get("water_level"), 0.0, 1.0)
     shader = terrain.get("shader")
@@ -105,6 +88,68 @@ def _validate_terrain(terrain) -> dict:
     elif "shader" in terrain:
         terrain.pop("shader", None)
     return terrain
+
+
+def _rgb01_to_255(value, fallback):
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return None if fallback is None else list(fallback)
+    nums = []
+    for item in value[:3]:
+        while isinstance(item, (list, tuple)) and item:
+            item = item[0]
+        try:
+            nums.append(float(item))
+        except (TypeError, ValueError):
+            return list(fallback)
+    if max(nums) <= 1.5:
+        nums = [n * 255.0 for n in nums]
+    return [max(0, min(255, int(round(n)))) for n in nums]
+
+
+def _parse_gradient_point(point):
+    if isinstance(point, dict):
+        height = point.get("height")
+        color = point.get("color")
+    elif isinstance(point, (list, tuple)) and len(point) >= 2:
+        height, color = point[0], point[1]
+    else:
+        return None
+    while isinstance(height, (list, tuple)) and height:
+        height = height[0]
+    try:
+        height = float(height)
+    except (TypeError, ValueError):
+        return None
+    rgb = _rgb01_to_255(color, None)
+    if rgb is None or len(rgb) < 3:
+        return None
+    return {"height": max(0.0, min(1.0, height)), "color": rgb}
+
+
+def _gradient_from_material(material) -> list:
+    mat = material if isinstance(material, dict) else {}
+    dirt = _rgb01_to_255(mat.get("dirt"), [120, 90, 50])
+    grass = _rgb01_to_255(mat.get("grass"), [70, 140, 50])
+    rock = _rgb01_to_255(mat.get("rock"), [130, 120, 110])
+    return [
+        {"height": 0.0, "color": dirt},
+        {"height": 0.35, "color": grass},
+        {"height": 0.7, "color": grass},
+        {"height": 1.0, "color": rock},
+    ]
+
+
+def _clean_gradient(gradient, material) -> list:
+    cleaned = []
+    if isinstance(gradient, list):
+        for point in gradient:
+            parsed = _parse_gradient_point(point)
+            if parsed:
+                cleaned.append(parsed)
+    if len(cleaned) >= 2:
+        return cleaned
+    log.warning("color_gradient missing, using terrain.material")
+    return _gradient_from_material(material)
 
 
 def _optional_float(value, lo, hi):
@@ -343,7 +388,63 @@ def _normalize_geometry(geometry) -> dict:
         if prim.get("scale") is not None:
             item["scale"] = prim["scale"]
         primitives.append(item)
-    return {"primitives": primitives}
+    return _ground_geometry({"primitives": primitives})
+
+
+def _prim_scale_y(prim) -> float:
+    scale = prim.get("scale")
+    if isinstance(scale, (list, tuple)) and len(scale) >= 2:
+        try:
+            return abs(float(scale[1]))
+        except (TypeError, ValueError):
+            return 1.0
+    if isinstance(scale, (int, float)):
+        return abs(float(scale))
+    return 1.0
+
+
+def _prim_half_height(prim) -> float:
+    ptype = str(prim.get("type") or "").lower()
+    params = prim.get("params") if isinstance(prim.get("params"), dict) else {}
+    sy = _prim_scale_y(prim)
+
+    def num(*keys, default=0.5):
+        for key in keys:
+            if key in params:
+                try:
+                    return abs(float(params[key]))
+                except (TypeError, ValueError):
+                    continue
+        return default
+
+    if ptype in ("cylinder", "cone", "box"):
+        return num("height", default=1.0) * 0.5 * sy
+    if ptype == "torus":
+        return (num("radius", default=0.5) + num("tube", default=0.2)) * sy
+    return num("radius", default=0.5) * sy
+
+
+def _ground_geometry(geometry: dict) -> dict:
+    """Сдвигает проп так, чтобы низ меша был на y=0, а не висел в воздухе."""
+    prims = geometry.get("primitives") or []
+    bottoms = []
+    for prim in prims:
+        pos = prim.get("position") or [0.0, 0.0, 0.0]
+        if not isinstance(pos, (list, tuple)) or len(pos) < 3:
+            pos = [0.0, 0.0, 0.0]
+        bottoms.append(float(pos[1]) - _prim_half_height(prim))
+    if not bottoms:
+        return geometry
+    shift = -min(bottoms) - 0.03
+    if abs(shift) < 0.001:
+        return geometry
+    for prim in prims:
+        pos = list(prim.get("position") or [0.0, 0.0, 0.0])
+        while len(pos) < 3:
+            pos.append(0.0)
+        pos[1] = float(pos[1]) + shift
+        prim["position"] = pos
+    return geometry
 
 
 def _is_ground_prop(name, geometry) -> bool:

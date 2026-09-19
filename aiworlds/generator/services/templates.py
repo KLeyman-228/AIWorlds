@@ -269,6 +269,15 @@ HAY_GEO = {
         {"type": "cone", "params": {"radius": 0.12, "height": 0.16, "segments": 6}, "position": [0.0, 0.78, 0.0]},
     ]
 }
+CACTUS_GEO = {
+    "primitives": [
+        {"type": "cylinder", "params": {"rTop": 0.12, "rBottom": 0.16, "height": 1.35, "segments": 7}, "position": [0.0, 0.675, 0.0]},
+        {"type": "sphere", "params": {"radius": 0.13, "widthSegments": 6, "heightSegments": 4}, "position": [0.0, 1.35, 0.0]},
+        {"type": "cylinder", "params": {"rTop": 0.07, "rBottom": 0.08, "height": 0.42, "segments": 6}, "position": [0.22, 0.82, 0.0], "rotation": [0.0, 0.0, 72.0]},
+        {"type": "cylinder", "params": {"rTop": 0.06, "rBottom": 0.07, "height": 0.28, "segments": 6}, "position": [0.38, 1.02, 0.0]},
+        {"type": "cylinder", "params": {"rTop": 0.06, "rBottom": 0.07, "height": 0.34, "segments": 6}, "position": [-0.2, 0.7, 0.04], "rotation": [0.0, 0.0, -68.0]},
+    ]
+}
 
 PROP_TEMPLATES = {
     "oak": {"kind": "tree", "geometry": OAK_GEO, "defaults": {"bark": [0.32, 0.18, 0.08], "leaf": [0.18, 0.46, 0.10], "leaf_dark": [0.08, 0.26, 0.05], "moss": [0.15, 0.30, 0.08]}},
@@ -282,6 +291,7 @@ PROP_TEMPLATES = {
     "crystal": {"kind": "crystal", "geometry": CRYSTAL_GEO, "defaults": {"crystal": [0.35, 0.72, 0.95], "em": 0.85}},
     "ruin": {"kind": "ruin", "geometry": RUIN_GEO, "defaults": {"rock": [0.52, 0.48, 0.42], "moss": [0.18, 0.32, 0.12]}},
     "hay": {"kind": "hay", "geometry": HAY_GEO, "defaults": {"hay": [0.78, 0.62, 0.22]}},
+    "cactus": {"kind": "tree", "geometry": CACTUS_GEO, "defaults": {"bark": [0.18, 0.42, 0.18], "leaf": [0.22, 0.52, 0.16], "leaf_dark": [0.10, 0.28, 0.10], "moss": [0.16, 0.36, 0.12]}},
 }
 
 TEMPLATE_ALIASES = {
@@ -294,6 +304,7 @@ TEMPLATE_ALIASES = {
     "crystal": "crystal", "crystals": "crystal", "gem": "crystal", "кристалл": "crystal",
     "ruin": "ruin", "ruins": "ruin", "ruined": "ruin", "руина": "ruin", "руины": "ruin",
     "hay": "hay", "haystack": "hay", "haybale": "hay", "стог": "hay",
+    "cactus": "cactus", "cacti": "cactus", "кактус": "cactus",
 }
 
 TERRAIN_TEMPLATE_UNIFORMS = {
