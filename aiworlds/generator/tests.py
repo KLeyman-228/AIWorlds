@@ -2,7 +2,7 @@ from django.test import SimpleTestCase
 
 from generator.services.ai_client import _parse_json
 from generator.services.instances import place_instances
-from generator.services.terrain import apply_features, generate_heightmap
+from generator.services.terrain import apply_features, generate_color_map, generate_heightmap
 from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan
 
 
@@ -27,6 +27,50 @@ class JsonParseTests(SimpleTestCase):
         )
         self.assertIn("gl_FragColor", data["shader"]["fragment"])
 
+    def test_expands_compact_metadata(self):
+        data = _parse_json(
+            '{"n":"Meadow","d":"day","t":{"sc":40,"oc":3,"sd":7,"w":0.2,"g":[[0,[20,40,80]],[1,[80,140,60]]],"f":[["rv",[[0,0.5],[1,0.5]],0.05,0.4]]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",12,"fr"]],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+        )
+        self.assertEqual(data["world_name"], "Meadow")
+        self.assertEqual(data["terrain"]["features"][0]["type"], "river")
+        self.assertEqual(data["prop_list"][0]["name"], "oak")
+        self.assertIn("gl_FragColor", data["post_process"]["shader"]["fragment"])
+
+    def test_expands_terrain_shader_and_leaf(self):
+        meta = _parse_json(
+            '{"n":"Meadow","d":"day","t":{"sc":40,"oc":3,"sd":7,"w":0.2,"g":[[0,[20,40,80]],[1,[80,140,60]]],"f":[]},"ts":["void main(){ gl_FragColor=vec4(0.2,0.5,0.1,1.0); }"],"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",8,"fr"]],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+        )
+        self.assertIn("gl_FragColor", meta["terrain"]["shader"]["fragment"])
+        prop = _parse_json(
+            '{"n":"oak","g":[["cyl",[0.1,0.2,1.2,6],[0,0.6,0]],["sph",[0.5,6,4],[0,1.5,0]]],"fs":["void main(){ gl_FragColor=vec4(0.3,0.2,0.1,1.0); }"],"ls":["void main(){ gl_FragColor=vec4(0.1,0.5,0.1,1.0); }"],"lv":["void main(){ gl_Position=vec4(0.0); }"],"i":[8,"fr",[0.8,1.2]]}'
+        )
+        self.assertIn("0.3,0.2,0.1", prop["shader"]["fragment"])
+        self.assertIn("0.1,0.5,0.1", prop["shader"]["leaf_fragment"])
+        self.assertIn("gl_Position", prop["shader"]["leaf_vertex"])
+
+    def test_expands_compact_prop(self):
+        data = _parse_json(
+            '{"n":"oak","g":[["cyl",[0.1,0.2,1.2,6],[0,0.6,0]],["con",[0.7,1.0,6],[0,1.5,0]],["sph",[0.3,6,4],[0,1.2,0]]],"fs":["void main(){ gl_FragColor=vec4(0.2,0.5,0.1,1.0); }"],"u":{"uColorA":[0.2,0.5,0.1]},"i":[10,"fr",[0.8,1.2]]}'
+        )
+        self.assertEqual(data["geometry"]["primitives"][0]["type"], "cylinder")
+        self.assertEqual(data["instances"]["distribution"], "forest")
+        self.assertIn("gl_FragColor", data["shader"]["fragment"])
+
+    def test_inserts_missing_commas_between_keys(self):
+        data = _parse_json(
+            '{"n":"boulder","g":[["sph",[0.5,6,4],[0,0.2,0]]]"fs":["void main(){ gl_FragColor=vec4(1.0); }"]"u":{"uC":[0.4,0.4,0.4]}"i":[8,"sc",[0.8,1.2]]}'
+        )
+        self.assertEqual(data["name"], "boulder")
+        self.assertEqual(data["instances"]["count"], 8)
+        self.assertIn("gl_FragColor", data["shader"]["fragment"])
+
+    def test_does_not_break_valid_compact_json(self):
+        data = _parse_json(
+            '{"n":"boulder","g":[["sph",[0.5,6,4],[0,0.2,0]]],"fs":["void main(){ gl_FragColor=vec4(1.0); }"],"u":{"uC":[0.4,0.4,0.4]},"i":[8,"sc",[0.8,1.2]]}'
+        )
+        self.assertEqual(data["name"], "boulder")
+        self.assertEqual(data["geometry"]["primitives"][0]["type"], "sphere")
+
 
 class InstancePlacementTests(SimpleTestCase):
     def test_forest_places_requested_count(self):
@@ -37,6 +81,25 @@ class InstancePlacementTests(SimpleTestCase):
         self.assertEqual(len(items), 12)
         self.assertEqual(len(items[0]["position"]), 3)
 
+    def test_avoids_river_bed(self):
+        hm = generate_heightmap(
+            size=48,
+            seed=3,
+            octaves=3,
+            features=[{"type": "river", "points": [[0.0, 0.5], [1.0, 0.5]], "width": 0.08, "depth": 0.6}],
+        )
+        features = [{"type": "river", "points": [[0.0, 0.5], [1.0, 0.5]], "width": 0.08, "depth": 0.6}]
+        items = place_instances(
+            {"count": 10, "distribution": "scattered"},
+            seed=4,
+            heightmap=hm,
+            features=features,
+            water_level=0.08,
+        )
+        self.assertGreaterEqual(len(items), 6)
+        for inst in items:
+            self.assertGreater(abs(inst["position"][2]), 1.2)
+
 
 class TerrainFeatureTests(SimpleTestCase):
     def test_river_lowers_center_of_map(self):
@@ -46,6 +109,24 @@ class TerrainFeatureTests(SimpleTestCase):
             [{"type": "river", "points": [[0.0, 0.5], [1.0, 0.5]], "width": 0.08, "depth": 0.6}],
         )
         self.assertLess(carved[16, 16], carved[4, 16])
+
+    def test_heightmap_is_smooth(self):
+        hm = generate_heightmap(size=48, seed=5, octaves=4, features=[])
+        diffs = abs(hm[1:] - hm[:-1])
+        self.assertLess(float(diffs.max()), 0.22)
+
+    def test_colormap_is_banded(self):
+        hm = generate_heightmap(size=24, seed=2, octaves=3, features=[])
+        cm = generate_color_map(
+            hm,
+            [
+                {"height": 0.0, "color": [20, 80, 180]},
+                {"height": 0.5, "color": [40, 160, 50]},
+                {"height": 1.0, "color": [180, 170, 150]},
+            ],
+        )
+        unique = len({tuple(px) for row in cm for px in row})
+        self.assertLessEqual(unique, 3)
 
 
 class ValidatorTests(SimpleTestCase):

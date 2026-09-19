@@ -94,6 +94,16 @@ def _validate_terrain(terrain) -> dict:
     terrain["color_gradient"] = cleaned
     terrain["features"] = _validate_features(terrain.get("features"))
     terrain["water_level"] = _optional_float(terrain.get("water_level"), 0.0, 1.0)
+    shader = terrain.get("shader")
+    if isinstance(shader, dict) and (
+        shader.get("fragment") or shader.get("fragment_lines")
+    ):
+        try:
+            terrain["shader"] = _validate_shader(shader, is_post=False)
+        except PlanValidationError:
+            terrain.pop("shader", None)
+    elif "shader" in terrain:
+        terrain.pop("shader", None)
     return terrain
 
 
@@ -203,7 +213,7 @@ def _rgb(value, field: str) -> list[int]:
         raise PlanValidationError(f"{field} содержит нечисла") from exc
 
 
-def validate_and_place_props(props, seed: int, heightmap=None) -> dict:
+def validate_and_place_props(props, seed: int, heightmap=None, features=None, water_level=None) -> dict:
     """Нормализует пропы и ставит инстансы на heightmap."""
     if not isinstance(props, dict) or not props:
         raise PlanValidationError("AI не вернул ни одного пропа")
@@ -214,6 +224,9 @@ def validate_and_place_props(props, seed: int, heightmap=None) -> dict:
     for name, prop in props.items():
         if not isinstance(prop, dict):
             log.warning("Skip prop %s: not an object", name)
+            continue
+        if _is_ground_prop(name, prop.get("geometry")):
+            log.warning("Skip prop %s: looks like a ground slab", name)
             continue
         geometry = _normalize_geometry(prop.get("geometry"))
         if len(geometry["primitives"]) < 1:
@@ -227,13 +240,26 @@ def validate_and_place_props(props, seed: int, heightmap=None) -> dict:
 
         instances = prop.get("instances")
         if isinstance(instances, list) and instances:
-            placed = _snap_instances(instances, heightmap)
+            placed = _snap_instances(
+                instances[: _max_count_for(name, prop)],
+                heightmap,
+                features=features,
+                water_level=water_level,
+            )
         else:
             rule = instances if isinstance(instances, dict) else {}
             if "count" not in rule:
                 rule["count"] = 8
+            rule["count"] = min(int(rule["count"]), _max_count_for(name, prop))
             try:
-                placed = place_instances(rule, seed=seed + len(name), heightmap=heightmap)
+                placed = place_instances(
+                    rule,
+                    seed=seed + len(name),
+                    heightmap=heightmap,
+                    features=features,
+                    water_level=water_level,
+                    keep_dry=True,
+                )
             except ValueError as exc:
                 log.warning("Skip prop %s: %s", name, exc)
                 continue
@@ -250,10 +276,11 @@ def validate_and_place_props(props, seed: int, heightmap=None) -> dict:
     return cleaned
 
 
-def _snap_instances(instances: list, heightmap) -> list:
-    from .terrain import HEIGHT_SCALE, sample_height_uv, world_to_uv
+def _snap_instances(instances: list, heightmap, features=None, water_level=None) -> list:
+    from .terrain import HEIGHT_SCALE, river_clearance_uv, sample_height_uv, world_to_uv
 
     placed = []
+    wet_cut = None if water_level is None else float(water_level) + 0.045
     for inst in instances:
         if not isinstance(inst, dict):
             continue
@@ -261,11 +288,15 @@ def _snap_instances(instances: list, heightmap) -> list:
         if len(pos) < 3:
             continue
         x, z = float(pos[0]), float(pos[2])
-        y = float(pos[1]) if heightmap is None else (
-            sample_height_uv(heightmap, *world_to_uv(x, z)) * HEIGHT_SCALE
-        )
+        u, v = world_to_uv(x, z)
+        y_norm = sample_height_uv(heightmap, u, v) if heightmap is not None else 0.0
+        if wet_cut is not None and y_norm <= wet_cut:
+            continue
+        clearance = river_clearance_uv(u, v, features)
+        if clearance is not None and clearance < 1.35:
+            continue
         item = dict(inst)
-        item["position"] = [x, y, z]
+        item["position"] = [x, y_norm * HEIGHT_SCALE, z]
         placed.append(item)
     return placed
 
@@ -279,7 +310,7 @@ def _normalize_geometry(geometry) -> dict:
         if not isinstance(prim, dict):
             continue
         ptype = str(prim.get("type") or "").lower()
-        if ptype not in ALLOWED_PRIMITIVES:
+        if ptype not in ALLOWED_PRIMITIVES or ptype == "plane":
             continue
         params = prim.get("params")
         if not isinstance(params, dict):
@@ -288,6 +319,9 @@ def _normalize_geometry(geometry) -> dict:
                 for k, v in prim.items()
                 if k not in ("type", "position", "rotation", "scale", "params")
             }
+        params = _clamp_prim_params(ptype, params)
+        if _is_huge_prim(ptype, params):
+            continue
         item = {"type": ptype, "params": params}
         if prim.get("position"):
             item["position"] = _vec3(prim["position"])
@@ -297,6 +331,70 @@ def _normalize_geometry(geometry) -> dict:
             item["scale"] = prim["scale"]
         primitives.append(item)
     return {"primitives": primitives}
+
+
+def _is_ground_prop(name, geometry) -> bool:
+    lowered = str(name or "").lower()
+    if any(word in lowered for word in ("glade", "ground", "terrain", "floor", "patch", "meadow", "field", "поляна", "земля")):
+        return True
+    raw = (geometry or {}).get("primitives") or []
+    for prim in raw:
+        if not isinstance(prim, dict):
+            continue
+        ptype = str(prim.get("type") or "").lower()
+        params = prim.get("params") if isinstance(prim.get("params"), dict) else prim
+        if ptype == "plane":
+            return True
+        if ptype == "box":
+            w = float(params.get("width") or 0)
+            d = float(params.get("depth") or 0)
+            h = float(params.get("height") or 0)
+            if (w >= 3.5 or d >= 3.5) and h <= 1.2:
+                return True
+    return False
+
+
+def _max_count_for(name, prop) -> int:
+    lowered = str(name or "").lower()
+    category = str((prop or {}).get("category") or "").lower()
+    if "flower" in lowered or "grass" in lowered or category in ("decoration", "dec"):
+        return 14
+    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir")):
+        return 12
+    return 10
+
+
+def _clamp_prim_params(ptype: str, params: dict) -> dict:
+    limits = {
+        "box": {"width": 1.8, "height": 2.4, "depth": 1.8},
+        "sphere": {"radius": 1.1},
+        "cylinder": {"rTop": 0.7, "rBottom": 0.9, "height": 2.2},
+        "cone": {"radius": 1.2, "height": 2.2},
+        "torus": {"radius": 0.8, "tube": 0.25},
+        "octahedron": {"radius": 0.9},
+        "icosahedron": {"radius": 0.9},
+        "dodecahedron": {"radius": 0.9},
+        "tetrahedron": {"radius": 0.9},
+        "plane": {"width": 1.2, "height": 1.2},
+    }
+    capped = dict(params or {})
+    for key, max_v in limits.get(ptype, {}).items():
+        if key in capped:
+            try:
+                val = float(capped[key])
+            except (TypeError, ValueError):
+                continue
+            if val > max_v:
+                capped[key] = max_v
+    return capped
+
+
+def _is_huge_prim(ptype: str, params: dict) -> bool:
+    if ptype == "box":
+        return float(params.get("width") or 0) >= 3.5 or float(params.get("depth") or 0) >= 3.5
+    if ptype == "plane":
+        return True
+    return False
 
 
 def _vec3(value) -> list[float]:
@@ -334,4 +432,14 @@ def _validate_shader(shader, is_post: bool = False) -> dict:
         uniforms.setdefault("uResolution", {"type": "vec2", "value": [1024, 768]})
         uniforms.pop("tDiffuse", None)
 
-    return {"vertex": vertex, "fragment": fragment, "uniforms": uniforms}
+    result = {"vertex": vertex, "fragment": fragment, "uniforms": uniforms}
+    leaf_fragment = (shader.get("leaf_fragment") or "").strip()
+    if not leaf_fragment and isinstance(shader.get("leaf_fragment_lines"), list):
+        leaf_fragment = "\n".join(str(line) for line in shader["leaf_fragment_lines"]).strip()
+    leaf_vertex = (shader.get("leaf_vertex") or "").strip()
+    if not leaf_vertex and isinstance(shader.get("leaf_vertex_lines"), list):
+        leaf_vertex = "\n".join(str(line) for line in shader["leaf_vertex_lines"]).strip()
+    if leaf_fragment:
+        result["leaf_fragment"] = leaf_fragment
+        result["leaf_vertex"] = leaf_vertex or STANDARD_VERTEX_SHADER
+    return result

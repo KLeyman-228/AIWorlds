@@ -9,6 +9,86 @@ import re
 
 log = logging.getLogger(__name__)
 
+LEAF_VERTEX = """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vWorldPos;
+uniform float uTime;
+void main() {
+  vUv = uv;
+  vNormal = normalize(normalMatrix * normal);
+  vec3 pos = position;
+  pos.x += sin(uTime * 1.7 + position.y * 3.0) * 0.045;
+  pos.z += cos(uTime * 1.3 + position.x * 2.4) * 0.035;
+  vPosition = pos;
+  vec4 wp = modelMatrix * vec4(pos, 1.0);
+  vWorldPos = wp.xyz;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}"""
+
+LEAF_FRAGMENT = """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float n2(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+}
+void main() {
+  vec3 n = normalize(vNormal);
+  float a = n2(vUv * 7.0);
+  float b = n2(vUv * 18.0 + 3.7);
+  float c0 = n2(vPosition.xz * 5.0);
+  float clumps = step(0.38, a * 0.55 + b * 0.45);
+  float holes = step(0.82, b);
+  vec3 shade = vec3(0.07, 0.22, 0.06);
+  vec3 mid = vec3(0.14, 0.42, 0.10);
+  vec3 lite = vec3(0.26, 0.62, 0.16);
+  vec3 c = mix(shade, mix(mid, lite, step(0.55, c0)), clumps);
+  c = mix(c, shade * 0.6, holes);
+  float lamb = 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);
+  c *= lamb;
+  c = floor(c * 8.0 + 0.5) / 8.0;
+  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.035;
+  gl_FragColor = vec4(c, 1.0);
+}"""
+
+TERRAIN_VERTEX = """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+varying vec3 vWorldPos;
+void main() {
+  vUv = uv;
+  vPosition = position;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vWorldPos = wp.xyz;
+  vNormal = normalize(mat3(modelMatrix) * normal);
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}"""
+
+BARK_FRAGMENT = """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vPosition;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+void main() {
+  vec3 n = normalize(vNormal);
+  float ridges = abs(fract(vPosition.y * 9.0 + vUv.x * 2.0) - 0.5);
+  float cracks = step(0.92, hash(floor(vec2(vUv.x * 14.0, vPosition.y * 22.0))));
+  float flakes = step(0.62, hash(floor(vUv * 16.0)));
+  float moss = step(0.55, 1.0 - clamp(vPosition.y * 0.7, 0.0, 1.0)) * step(0.5, hash(floor(vPosition.xz * 10.0)));
+  vec3 dark = vec3(0.18, 0.10, 0.05);
+  vec3 mid = vec3(0.34, 0.20, 0.09);
+  vec3 lite = vec3(0.48, 0.30, 0.14);
+  vec3 c = mix(dark, lite, smoothstep(0.08, 0.28, ridges));
+  c = mix(c, mid, flakes * 0.35);
+  c = mix(c, dark * 0.45, cracks);
+  c = mix(c, vec3(0.16, 0.28, 0.08), moss * 0.7);
+  c *= 0.5 + 0.5 * max(dot(n, normalize(vec3(0.4, 0.8, 0.2))), 0.0);
+  c = floor(c * 7.0 + 0.5) / 7.0;
+  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.03;
+  gl_FragColor = vec4(c, 1.0);
+}"""
+
 
 # ============================================================
 # ШАБЛОНЫ
@@ -274,13 +354,14 @@ scene.add(sky);
 // ============================================================
 """
 
-JS_TERRAIN = """const HEIGHTMAP_B64 = "{heightmap_b64}";
-const COLORMAP_B64 = "{colormap_b64}";
-const HEIGHTMAP = {heightmap_js};
+JS_TERRAIN = """const HEIGHTMAP = {heightmap_js};
 const HEIGHTMAP_RES = {heightmap_res};
 const TERRAIN_SIZE = {terrain_size};
 const HEIGHT_SCALE = {height_scale};
 const WATER_LEVEL = {water_level};
+const COLORMAP_B64 = "{colormap_b64}";
+const RIVER_PATHS = {river_paths_json};
+const LAKE_SPOTS = {lake_spots_json};
 
 function heightAt(x, z) {{
   const u = THREE.MathUtils.clamp(x / TERRAIN_SIZE + 0.5, 0, 1);
@@ -298,7 +379,8 @@ function heightAt(x, z) {{
   return (a * (1 - ty) + b * ty) * HEIGHT_SCALE;
 }}
 
-const colorTex = loadB64Texture(COLORMAP_B64);
+const colorTex = loadB64Texture(COLORMAP_B64, true);
+colorTex.colorSpace = THREE.SRGBColorSpace;
 const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, HEIGHTMAP_RES - 1, HEIGHTMAP_RES - 1);
 terrainGeo.rotateX(-Math.PI / 2);
 const tPos = terrainGeo.attributes.position;
@@ -308,12 +390,19 @@ for (let i = 0; i < tPos.count; i++) {{
 tPos.needsUpdate = true;
 terrainGeo.computeVertexNormals();
 
-const terrainMat = new THREE.MeshStandardMaterial({{
-  map: colorTex,
-  flatShading: true,
-  roughness: 0.92,
-  metalness: 0.0,
-}});
+const terrainShader = {{
+  uniforms: {{
+    uTime: {{ value: 0 }},
+    uMap: {{ value: colorTex }},
+  }},
+  vertexShader: {terrain_vertex_json},
+  fragmentShader: {terrain_fragment_json},
+}};
+const terrainMat = compileShader(terrainShader, 0x3d7a32);
+if (terrainMat.uniforms && !terrainMat.uniforms.uMap) {{
+  terrainMat.map = colorTex;
+}}
+terrainMat.side = THREE.FrontSide;
 
 const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow = true;
@@ -324,15 +413,17 @@ if (WATER_LEVEL != null) {{
   const water = new THREE.Mesh(
     new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 1, 1),
     new THREE.MeshStandardMaterial({{
-      color: 0x3a7ebd,
+      color: 0x2a78b8,
       transparent: true,
-      opacity: 0.62,
-      roughness: 0.2,
-      metalness: 0.1,
+      opacity: 0.7,
+      roughness: 0.35,
+      metalness: 0.05,
+      flatShading: true,
     }})
   );
   water.rotation.x = -Math.PI / 2;
   water.position.y = WATER_LEVEL * HEIGHT_SCALE;
+  water.renderOrder = 1;
   worldGroup.add(water);
 }}
 
@@ -341,16 +432,23 @@ if (WATER_LEVEL != null) {{
 # ⚠️ ГЛАВНОЕ ОТЛИЧИЕ: IIFE + именованная переменная propMaterial_<name>
 JS_PROP_TEMPLATE = """// ============ PROP: {prop_name} ============
 const {material_var} = (function() {{
-  const propShader = {{
-    uniforms: {{
-{uniforms_lines}
-    }},
+  const isTree = {is_tree};
+  const barkShader = {{
+    uniforms: {{ {uniforms_lines} }},
     vertexShader: {vertex_json},
     fragmentShader: {fragment_json},
   }};
-
-  const mat = compileShader(propShader, propFallbackColor(propShader.uniforms));
-  mat.side = THREE.DoubleSide;
+  const leafShader = {{
+    uniforms: {{ {uniforms_lines} }},
+    vertexShader: {leaf_vertex_json},
+    fragmentShader: {leaf_fragment_json},
+  }};
+  const barkMat = compileShader(barkShader, propFallbackColor(barkShader.uniforms));
+  barkMat.side = THREE.DoubleSide;
+  const leafMat = isTree
+    ? compileShader(leafShader, 0x3d8a32)
+    : barkMat;
+  if (leafMat) leafMat.side = THREE.DoubleSide;
 
   const propGeometry = {geometry_json};
   const propInstances = {instances_json};
@@ -360,7 +458,8 @@ const {material_var} = (function() {{
     for (const prim of propGeometry.primitives || []) {{
       const geo = buildPrimitive(prim);
       if (!geo) continue;
-      const mesh = new THREE.Mesh(geo, mat);
+      const useLeaf = isTree && (prim.type === 'sphere' || prim.type === 'cone' || prim.type === 'icosahedron');
+      const mesh = new THREE.Mesh(geo, useLeaf ? leafMat : barkMat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       applyTransform(mesh, prim);
@@ -379,7 +478,7 @@ const {material_var} = (function() {{
     worldGroup.add(propGroup);
   }}
 
-  return mat;
+  return isTree ? leafMat : barkMat;
 }})();
 
 """
@@ -400,6 +499,9 @@ function animate() {{
   const t = clock.getElapsedTime();
 
   if (skyUniforms && skyUniforms.uTime) skyUniforms.uTime.value = t;
+  if (terrainMat && terrainMat.uniforms && terrainMat.uniforms.uTime) {{
+    terrainMat.uniforms.uTime.value = t;
+  }}
   for (const mat of propMaterials) {{
     if (mat && mat.uniforms && mat.uniforms.uTime) {{
       mat.uniforms.uTime.value = t;
@@ -432,7 +534,7 @@ console.log('✅ World loaded: ' + WORLD_NAME);
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================
 
-def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap_js: str = "[]") -> str:
+def transpile_to_js(plan: dict, heightmap_b64: str = "", colormap_b64: str = "", heightmap_js: str = "[]") -> str:
     """
     Принимает JSON-план мира + base64-карты и возвращает готовый JS-код.
     """
@@ -455,14 +557,58 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap
 
     # --- Terrain ---
     water = plan.get("terrain", {}).get("water_level")
+    rivers = []
+    lakes = []
+    for feat in plan.get("terrain", {}).get("features") or []:
+        if feat.get("type") == "river" and feat.get("points"):
+            rivers.append({"points": feat["points"], "width": feat.get("width", 0.05)})
+        if feat.get("type") in ("lake", "basin") and feat.get("center"):
+            lakes.append({"center": feat["center"], "radius": feat.get("radius", 0.12)})
+    tsh = (plan.get("terrain") or {}).get("shader") or {}
+    terrain_fragment = _stabilize_terrain_fragment(tsh.get("fragment") or """varying vec2 vUv;
+varying vec3 vNormal;
+varying vec3 vWorldPos;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float n2(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+}
+void main() {
+  vec3 n = normalize(vNormal);
+  float h = clamp(vWorldPos.y / 4.0, 0.0, 1.0);
+  float slope = 1.0 - clamp(n.y, 0.0, 1.0);
+  float patches = n2(vWorldPos.xz * 2.4);
+  float tufts = n2(vWorldPos.xz * 9.0);
+  float blades = step(0.52, n2(vWorldPos.xz * 28.0));
+  vec3 mud = vec3(0.22, 0.18, 0.10);
+  vec3 sand = vec3(0.55, 0.46, 0.24);
+  vec3 grassA = vec3(0.16, 0.40, 0.12);
+  vec3 grassB = vec3(0.28, 0.58, 0.16);
+  vec3 dry = vec3(0.42, 0.40, 0.16);
+  vec3 rock = vec3(0.38, 0.36, 0.32);
+  vec3 c = mix(mud, sand, step(0.12, h));
+  c = mix(c, mix(grassA, grassB, step(0.5, patches)), step(0.22, h));
+  c = mix(c, dry, step(0.62, h));
+  c = mix(c, rock, step(0.82, h));
+  c = mix(c, grassA * 0.75, blades * (1.0 - step(0.7, h)) * 0.45);
+  c = mix(c, mud, step(0.62, tufts) * 0.2);
+  c = mix(c, rock, smoothstep(0.25, 0.55, slope));
+  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
+  c = floor(c * 8.0 + 0.5) / 8.0;
+  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.03;
+  gl_FragColor = vec4(c, 1.0);
+}"""
     parts.append(JS_TERRAIN.format(
-        heightmap_b64=heightmap_b64,
-        colormap_b64=colormap_b64,
         heightmap_js=heightmap_js,
         heightmap_res=128,
         terrain_size=20,
         height_scale=4.0,
         water_level="null" if water is None else float(water),
+        colormap_b64=colormap_b64 or "",
+        river_paths_json="[]",
+        lake_spots_json="[]",
+        terrain_vertex_json=json.dumps(TERRAIN_VERTEX),
+        terrain_fragment_json=json.dumps(terrain_fragment),
     ))
 
     # --- Props ---
@@ -487,6 +633,17 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap
         shader = prop.get('shader') or {}
         vertex = shader.get('vertex', '')
         fragment = shader.get('fragment', '')
+        is_tree = _is_tree_prop(prop_name, geometry)
+        leaf_fragment = (shader.get("leaf_fragment") or "").strip()
+        leaf_vertex = (shader.get("leaf_vertex") or "").strip()
+        if is_tree:
+            if not leaf_fragment:
+                leaf_fragment = LEAF_FRAGMENT
+            if not leaf_vertex:
+                leaf_vertex = LEAF_VERTEX
+        else:
+            leaf_vertex = vertex
+            leaf_fragment = fragment
 
         prop_code = JS_PROP_TEMPLATE.format(
             prop_name=safe_name,
@@ -494,6 +651,9 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap
             uniforms_lines=uniforms_lines,
             vertex_json=json.dumps(vertex, ensure_ascii=False),
             fragment_json=json.dumps(fragment, ensure_ascii=False),
+            leaf_vertex_json=json.dumps(leaf_vertex, ensure_ascii=False),
+            leaf_fragment_json=json.dumps(leaf_fragment, ensure_ascii=False),
+            is_tree='true' if is_tree else 'false',
             geometry_json=json.dumps(geometry, ensure_ascii=False, indent=4),
             instances_json=json.dumps(instances, ensure_ascii=False, indent=4),
         )
@@ -539,6 +699,32 @@ def transpile_to_js(plan: dict, heightmap_b64: str, colormap_b64: str, heightmap
 # ============================================================
 # ХЕЛПЕРЫ
 # ============================================================
+
+def _stabilize_terrain_fragment(src: str) -> str:
+    """Цвет ландшафта только от мира, не от камеры/экрана."""
+    text = src or ""
+    text = text.replace("cameraPosition", "vWorldPos")
+    text = text.replace("gl_FragCoord.xy", "(vWorldPos.xz * 32.0)")
+    text = text.replace("gl_FragCoord.x", "(vWorldPos.x * 32.0)")
+    text = text.replace("gl_FragCoord.y", "(vWorldPos.z * 32.0)")
+    if "vWorldPos.y" not in text and "vPosition.y" not in text:
+        text = text.replace(
+            "void main()",
+            "void main() /* height: use vWorldPos.y */",
+            1,
+        )
+    return text
+
+
+def _is_tree_prop(name: str, geometry: dict) -> bool:
+    lowered = str(name or "").lower()
+    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow")):
+        return True
+    types = [str(p.get("type") or "") for p in (geometry or {}).get("primitives") or []]
+    has_trunk = "cylinder" in types
+    has_crown = any(t in types for t in ("sphere", "cone", "icosahedron"))
+    return has_trunk and has_crown
+
 
 def _sanitize_js_identifier(name: str) -> str:
     """

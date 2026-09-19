@@ -6,13 +6,15 @@ from __future__ import annotations
 import logging
 import time
 
+import numpy as np
+
 from .ai_client import generate_props_parallel, generate_world_metadata
 from .js_transpiler import transpile_to_js
 from .terrain import (
+    choose_water_level,
     colormap_to_base64,
     generate_color_map,
     generate_heightmap,
-    heightmap_to_base64,
     heightmap_to_js_array,
 )
 from .validator import validate_and_place_props, validate_plan
@@ -51,19 +53,35 @@ def build_world_js(user_prompt: str, model: str | None = None, progress=None) ->
         seed=plan["terrain"]["seed"],
         features=plan["terrain"].get("features") or [],
     )
+    features = plan["terrain"].setdefault("features", [])
+    if not any(f.get("type") in ("river", "lake", "basin") for f in features):
+        features.append({
+            "type": "river",
+            "points": [[0.02, 0.38], [0.28, 0.46], [0.55, 0.52], [0.98, 0.62]],
+            "width": 0.055,
+            "depth": 0.42,
+        })
+        heightmap = generate_heightmap(
+            size=128,
+            scale=plan["terrain"]["scale"],
+            octaves=plan["terrain"]["octaves"],
+            seed=plan["terrain"]["seed"],
+            features=features,
+        )
+    plan["terrain"]["water_level"] = choose_water_level(heightmap, features)
     plan["props"] = validate_and_place_props(
         plan.get("props") or meta.get("props"),
         seed=plan["terrain"]["seed"],
         heightmap=heightmap,
+        features=features,
+        water_level=plan["terrain"]["water_level"],
     )
 
     _status("coloring")
     colormap = generate_color_map(heightmap, plan["terrain"]["color_gradient"])
-    hm_b64 = heightmap_to_base64(heightmap)
     cm_b64 = colormap_to_base64(colormap)
     hm_js = heightmap_to_js_array(heightmap)
-
-    js_code = transpile_to_js(plan, hm_b64, cm_b64, heightmap_js=hm_js)
+    js_code = transpile_to_js(plan, colormap_b64=cm_b64, heightmap_js=hm_js)
     elapsed = time.perf_counter() - started
     log.info(
         "World ready name=%s props=%s js_chars=%s time=%.2fs",

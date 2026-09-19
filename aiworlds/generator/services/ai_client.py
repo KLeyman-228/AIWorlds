@@ -28,6 +28,8 @@ API_KEY = os.getenv(
 BASE_URL = os.getenv("AI_BASE_URL", "https://ru.cheapvibecode.ru/v1")
 MODEL = os.getenv("AI_MODEL", "kimi-k3")
 FAST_MODEL = os.getenv("AI_FAST_MODEL", "kimi-k3")
+SCENE_MAX_TOKENS = int(os.getenv("AI_SCENE_MAX_TOKENS", "25000"))
+METADATA_MAX_TOKENS = min(5000, SCENE_MAX_TOKENS)
 
 STANDARD_VERTEX_SHADER = """varying vec2 vUv;
 varying vec3 vNormal;
@@ -49,136 +51,34 @@ void main() {
 }"""
 
 JSON_RETRY_HINT = (
-    "Предыдущий ответ был пустым или невалидным JSON. "
-    "Верни ТОЛЬКО один JSON-объект, без markdown. "
-    "GLSL клади массивом строк в shader.fragment_lines и shader.vertex_lines. "
-    "Никаких сырых переносов внутри кавычек."
+    "Верни ТОЛЬКО компактный JSON по схеме. Без markdown. "
+    "GLSL только массивом строк fs. Не обрезай JSON."
 )
 
-METADATA_SYSTEM_PROMPT = r"""Ты — арт-директор ретро-стратегий: Warcraft II/III, ранняя Dota, Civilization III.
-Генерируешь JSON-описание изометрического 3D-уровня в духе RTS/TBS 90-х–начала 2000-х:
-низкополигональные меши, палитра 16–32 цвета, террасы ландшафта, читаемые силуэты юнитов и строений.
+METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dota/Civ3). Верни ТОЛЬКО компактный JSON.
 
-Верни ТОЛЬКО валидный JSON без markdown и комментариев.
+Схема:
+{"n":"имя","d":"1 фраза","t":{"sc":45,"oc":4,"sd":42,"w":0.18,"g":[[0,[30,90,40]],[1,[90,70,40]]],"f":[["rv",[[0.1,0.4],[0.9,0.55]],0.05,0.4]]},"ts":["varying vec2 vUv;","varying vec3 vWorldPos;","uniform float uTime;","void main(){ float n=fract(sin(dot(floor(vWorldPos.xz*8.0),vec2(12.9,78.2)))*43758.5); vec3 c=mix(vec3(0.18,0.42,0.12),vec3(0.32,0.62,0.16),step(0.5,n)); gl_FragColor=vec4(c,1.0); }"],"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",10,"fr"]],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
 
-{
-  "world_name": "атмосферное название 2-5 слов",
-  "description": "1-2 предложения: биом, фракция, настроение",
-  "style": {
-    "era": "warcraft|dota|civ3|hybrid",
-    "palette_name": "название палитры",
-    "mood": "коротко"
-  },
-  "terrain": {
-    "scale": 10-100,
-    "octaves": 1-8,
-    "seed": целое,
-    "water_level": 0.22,
-    "color_gradient": [
-      {"height": 0.0, "color": [R,G,B]},
-      {"height": 1.0, "color": [R,G,B]}
-    ],
-    "features": [
-      {"type": "river", "points": [[0.05, 0.4], [0.4, 0.5], [0.95, 0.6]], "width": 0.05, "depth": 0.45},
-      {"type": "basin", "center": [0.3, 0.7], "radius": 0.12, "depth": 0.35},
-      {"type": "ridge", "points": [[0.2, 0.2], [0.8, 0.25]], "width": 0.08, "height": 0.4}
-    ]
-  },
-  "atmosphere": {
-    "time_of_day": "day",
-    "clouds": true,
-    "fog_color": [170, 200, 230],
-    "fog_density": 0.01,
-    "sky_color": [135, 185, 235],
-    "sun_color": [255, 244, 220],
-    "ambient_color": [150, 170, 200]
-  },
-  "prop_list": [
-    {
-      "name": "snake_case_id",
-      "category": "vegetation|structure|rock|unit_prop|magic|decoration",
-      "count": 5-40,
-      "role": "зачем объект на карте RTS"
-    }
-  ],
-  "post_process": {
-    "shader": {
-      "vertex_lines": ["varying vec2 vUv;", "void main() {", "  vUv = uv;", "  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);", "}"],
-      "fragment_lines": ["uniform sampler2D tDiffuse;", "uniform float uTime;", "uniform vec2 uResolution;", "varying vec2 vUv;", "void main() {", "  vec4 color = texture2D(tDiffuse, vUv);", "  gl_FragColor = color;", "}"],
-      "uniforms": {
-        "uTint": {"type": "vec3", "value": [1.0, 0.95, 0.8]}
-      }
-    }
-  }
-}
-
-Правила:
-- color_gradient: 5-8 точек, height строго от 0.0 до 1.0, цвета 0-255. Нижние ступени = вода/ил, если есть река/озеро.
-- Палитра как в Warcraft/Civ3: трава, грязь, песок, камень, вода отдельными ступенями, не фотореализм.
-- Ландшафт НЕ только шум. Обязательно 1-4 features в UV 0..1 (x=u, y=v):
-  river: points[], width, depth — прорезает русло
-  lake/basin: center[u,v], radius, depth — впадина
-  ridge: points[], width, height — хребет
-  plateau: center, radius, height — плоскогорье
-  mound: center, radius, height — холм
-- Код сам вырежет эти формы на heightmap. Клади реку/ущелье/озеро если промпт этого просит.
-- water_level 0..1, если есть вода; иначе null.
-- Небо ДНЁМ синее: sky_color около [135,185,235], fog_color около [170,200,230], fog_density <= 0.015.
-  time_of_day=sunset/night только если промпт явно про закат/ночь.
-- post_process: лёгкая виньетка + дитеринг. ЗАПРЕЩЕНО красить кадр в красный/оранжевый.
-  tint максимум vec3(1.02, 1.0, 0.98). Небо должно остаться голубым.
-- prop_list: 4-8 уникальных типов под КОНКРЕТНЫЙ промпт.
-- Каждый проп — смысл на тактической карте (дерево-блокер, шахта, башня, ферма).
-- Vertex пост-процесса: varying vec2 vUv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
-- Не объявляй uTime в uniforms. tDiffuse не клади в uniforms.
-- GLSL ES 1.0: без #version, без in/out, только varying.
-- Шейдеры ТОЛЬКО как vertex_lines / fragment_lines (массив строк).
+Ключи: n имя, d описание, t террейн, ts fragment ландшафта, a атмосфера, p пропы, pp постпроцесс.
+t.w уровень воды 0.12-0.22 — код рисует ПЛОСКОСТЬ воды.
+t.g 6 ретро-ступеней. t.f фичи UV: rv река, lk озеро.
+ts: 28-50 строк GLSL ES1 fragment ландшафта. Шум ТОЛЬКО от vWorldPos.xz / vWorldPos.y. ЗАПРЕЩЕНО: cameraPosition, gl_FragCoord, viewDir, fresnel. Биомы по vWorldPos.y. Склон по world-normal.y. Lambert от фиксированного vec3(0.4,0.85,0.2). dither от vWorldPos.xz.
+a.td day, sk голубой. p 4-6 пропов count<=14. Не делай проп-поляну.
+JSON компактный, без markdown.
 """
 
-PROP_SYSTEM_PROMPT = r"""Ты — теххудожник ретро-RTS (Warcraft, Dota, Civilization III).
-Пишешь ОДИН проп: низкополигональная геометрия из примитивов + уникальный GLSL ES 1.0 материал.
+PROP_SYSTEM_PROMPT = r"""Ретро-RTS теххудожник. Один проп. ТОЛЬКО компактный JSON.
 
-Верни ТОЛЬКО валидный JSON без markdown.
+{"n":"oak","g":[["cyl",[0.12,0.18,1.4,6],[0,0.7,0]],["sph",[0.7,6,4],[0,1.7,0]],["sph",[0.5,6,4],[0.35,1.5,0.1]]],"fs":["varying vec3 vPosition;","varying vec3 vNormal;","void main(){ float b=step(0.5,fract(vPosition.y*8.0)); vec3 c=mix(vec3(0.28,0.16,0.08),vec3(0.42,0.26,0.12),b); gl_FragColor=vec4(c,1.0); }"],"ls":["varying vec2 vUv;","varying vec3 vNormal;","void main(){ float n=fract(sin(dot(floor(vUv*12.0),vec2(12.9,78.2)))*43758.5); vec3 c=mix(vec3(0.10,0.34,0.08),vec3(0.22,0.58,0.14),step(0.45,n)); gl_FragColor=vec4(c,1.0); }"],"lv":["varying vec2 vUv;","varying vec3 vNormal;","varying vec3 vPosition;","uniform float uTime;","void main(){ vUv=uv; vNormal=normalize(normalMatrix*normal); vec3 p=position; p.x+=sin(uTime*1.6+position.y*3.0)*0.05; p.z+=cos(uTime*1.2+position.x*2.0)*0.04; vPosition=p; vec4 wp=modelMatrix*vec4(p,1.0); gl_Position=projectionMatrix*viewMatrix*wp; }"],"u":{"uBark":[0.32,0.18,0.08]},"i":[8,"fr",[0.8,1.2]]}
 
-{
-  "name": "тот же id",
-  "geometry": {
-    "primitives": [
-      {
-        "type": "cylinder",
-        "params": {"rTop": 0.12, "rBottom": 0.18, "height": 1.4, "segments": 6},
-        "position": [0, 0.7, 0],
-        "rotation": [0, 0, 0],
-        "scale": 1
-      }
-    ]
-  },
-  "shader": {
-    "vertex_lines": ["varying vec2 vUv;", "varying vec3 vNormal;", "varying vec3 vPosition;", "varying vec3 vWorldPos;", "void main() {", "  vUv = uv;", "  vNormal = normalize(normalMatrix * normal);", "  vPosition = position;", "  vec4 wp = modelMatrix * vec4(position, 1.0);", "  vWorldPos = wp.xyz;", "  gl_Position = projectionMatrix * viewMatrix * wp;", "}"],
-    "fragment_lines": ["uniform float uTime;", "varying vec2 vUv;", "varying vec3 vNormal;", "varying vec3 vPosition;", "void main() {", "  vec3 color = vec3(0.2, 0.45, 0.15);", "  gl_FragColor = vec4(color, 1.0);", "}"],
-    "uniforms": {
-      "uColorA": {"type": "vec3", "value": [0.2, 0.45, 0.15]}
-    }
-  },
-  "instances": {
-    "count": 20,
-    "distribution": "scattered|forest|cluster|river_line",
-    "scale_range": [0.7, 1.4]
-  }
-}
-
-Примитивы: box, sphere, cylinder, cone, torus, octahedron, icosahedron, dodecahedron, tetrahedron, plane.
-segments всегда 6-8 (ретро-силуэт). Проп = 3-6 примитивов.
-
-МАТЕРИАЛ (fragment) — это главное:
-- Процедурный, без внешних текстур.
-- Стилистика: палитра Warcraft/Dota/Civ3, плоское освещение, дитеринг, квантование цвета.
-- 3-5 техник: hash-шум, fresnel, пульс uTime, дитеринг, градиент по vPosition.y, domain warp UV, псевдо-ламберт.
-- Уникальный шейдер под ЭТОТ объект (кора, руны, золото шахты, слизь, лёд, кирпич, листва). Не универсальный серый.
-- GLSL ES 1.0: varying, gl_FragColor, без #version, без texture2D кроме если сам не используешь карты.
-- Не объявляй uTime в uniforms.
-- JSON должен парситься json.loads без правок. Шейдеры только vertex_lines/fragment_lines (массив строк). Не вставляй GLSL куском с переносами внутри кавычек.
-- vertex_lines можно опустить — код подставит стандартный vertex.
+g: 3-6 малых примитивов. Дерево: cyl ствол + sph/con крона. ЗАПРЕЩЕНО plane и огромные box.
+Для ДЕРЕВА обязательно два материала, 24-40 строк каждый:
+fs = КОРА: вертикальные трещины, чешуйки, тёмные борозды, мох снизу (vPosition.y). Матовая. БЕЗ fresnel/gloss/sin(uTime) в цвете.
+ls = ЛИСТВА: 2-3 октавы hash по UV/world, комочки листьев, тёмные дырки между ними, 3 оттенка зелени. Матовая. БЕЗ fresnel и БЕЗ пульса цвета.
+lv = vertex листвы: качай position через sin/cos(uTime), амплитуда 0.03-0.07. Цвет во fragment НЕ от uTime.
+Камень: трещины+мох+зерно. Цветок: стебель/лепесток разными hash. i count<=14.
+i count<=14. JSON валидный, шейдеры массивом строк, не обрезай.
 """
 
 _http_timeout = httpx.Timeout(600.0, connect=10.0)
@@ -261,10 +161,67 @@ def _escape_controls_in_strings(text: str) -> str:
     return "".join(out)
 
 
+def _close_truncated_json(text: str) -> str:
+    in_string = False
+    escape = False
+    stack = []
+    for char in text:
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            stack.append("}")
+        elif char == "[":
+            stack.append("]")
+        elif char in "}]" and stack:
+            stack.pop()
+    if in_string:
+        text += '"'
+    text = re.sub(r",\s*$", "", text)
+    return text + "".join(reversed(stack))
+
+
+def _insert_missing_commas(text: str) -> str:
+    """Вставляет запятую, если после значения сразу идёт следующий ключ/элемент."""
+    out = []
+    in_string = False
+    escape = False
+    prev_ns = ""
+    for char in text:
+        if in_string:
+            out.append(char)
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            if prev_ns and prev_ns not in "{[:,":
+                out.append(",")
+            in_string = True
+            out.append(char)
+            prev_ns = char
+            continue
+        out.append(char)
+        if not char.isspace():
+            prev_ns = char
+    return "".join(out)
+
+
 def _repair_json(text: str) -> str:
     repaired = _escape_controls_in_strings(text)
+    repaired = _insert_missing_commas(repaired)
     repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
-    return repaired
+    return _close_truncated_json(repaired)
 
 
 def _parse_json(text: str) -> dict:
@@ -276,10 +233,228 @@ def _parse_json(text: str) -> dict:
             data = json.loads(candidate)
             if not isinstance(data, dict):
                 raise AIGenerationError("JSON AI должен быть объектом")
-            return _normalize_shader_fields(data)
+            return _normalize_shader_fields(expand_compact(data))
         except json.JSONDecodeError as exc:
             last_error = exc
     raise AIGenerationError(f"AI вернул невалидный JSON: {last_error}") from last_error
+
+
+PRIM_ALIAS = {
+    "box": "box",
+    "sph": "sphere",
+    "sphere": "sphere",
+    "cyl": "cylinder",
+    "cylinder": "cylinder",
+    "con": "cone",
+    "cone": "cone",
+    "tor": "torus",
+    "torus": "torus",
+    "oct": "octahedron",
+    "octahedron": "octahedron",
+    "ico": "icosahedron",
+    "icosahedron": "icosahedron",
+    "dod": "dodecahedron",
+    "dodecahedron": "dodecahedron",
+    "tet": "tetrahedron",
+    "tetrahedron": "tetrahedron",
+    "pln": "plane",
+    "plane": "plane",
+}
+FEAT_ALIAS = {
+    "rv": "river",
+    "lk": "lake",
+    "bs": "basin",
+    "rd": "ridge",
+    "pl": "plateau",
+    "md": "mound",
+}
+DIST_ALIAS = {"sc": "scattered", "fr": "forest", "cl": "cluster", "rv": "river_line"}
+CAT_ALIAS = {
+    "veg": "vegetation",
+    "str": "structure",
+    "rk": "rock",
+    "un": "unit_prop",
+    "mag": "magic",
+    "dec": "decoration",
+}
+PRIM_PARAMS = {
+    "box": ("width", "height", "depth"),
+    "sphere": ("radius", "widthSegments", "heightSegments"),
+    "cylinder": ("rTop", "rBottom", "height", "segments"),
+    "cone": ("radius", "height", "segments"),
+    "torus": ("radius", "tube", "radialSegments", "tubularSegments"),
+    "octahedron": ("radius",),
+    "icosahedron": ("radius",),
+    "dodecahedron": ("radius",),
+    "tetrahedron": ("radius",),
+    "plane": ("width", "height"),
+}
+
+
+def expand_compact(data: dict) -> dict:
+    """Разворачивает сжатый DSL в полный план. Полный JSON пропускается."""
+    if "g" in data and isinstance(data.get("g"), list) and "geometry" not in data:
+        return _expand_prop(data)
+    if "n" in data and ("t" in data or "p" in data) and "world_name" not in data:
+        return _expand_metadata(data)
+    return data
+
+
+def _expand_metadata(data: dict) -> dict:
+    terrain = data.get("t") or {}
+    atmo = data.get("a") or {}
+    props = []
+    for item in data.get("p") or []:
+        if isinstance(item, (list, tuple)) and len(item) >= 3:
+            dist = DIST_ALIAS.get(str(item[3]), item[3]) if len(item) > 3 else "scattered"
+            props.append(
+                {
+                    "name": item[0],
+                    "category": CAT_ALIAS.get(str(item[1]), item[1]),
+                    "count": int(item[2]),
+                    "distribution": dist,
+                }
+            )
+        elif isinstance(item, dict):
+            props.append(item)
+    gradient = []
+    for stop in terrain.get("g") or []:
+        if isinstance(stop, (list, tuple)) and len(stop) >= 2:
+            gradient.append({"height": stop[0], "color": stop[1]})
+        elif isinstance(stop, dict):
+            gradient.append(stop)
+    features = []
+    for feat in terrain.get("f") or []:
+        expanded = _expand_feature(feat)
+        if expanded:
+            features.append(expanded)
+    pp = data.get("pp")
+    post = {"shader": {"fragment_lines": pp}} if isinstance(pp, list) else data.get("post_process") or {}
+    ts = data.get("ts")
+    terrain_shader = None
+    if isinstance(ts, list):
+        terrain_shader = {"fragment_lines": ts}
+    elif isinstance(ts, str):
+        terrain_shader = {"fragment": ts}
+    return {
+        "world_name": data.get("n") or data.get("world_name"),
+        "description": data.get("d") or data.get("description") or "",
+        "terrain": {
+            "scale": terrain.get("sc", terrain.get("scale", 45)),
+            "octaves": terrain.get("oc", terrain.get("octaves", 4)),
+            "seed": terrain.get("sd", terrain.get("seed", 42)),
+            "water_level": terrain.get("w", terrain.get("water_level")),
+            "color_gradient": gradient or terrain.get("color_gradient"),
+            "features": features or terrain.get("features") or [],
+            "shader": terrain_shader or terrain.get("shader"),
+        },
+        "atmosphere": {
+            "time_of_day": atmo.get("td", atmo.get("time_of_day", "day")),
+            "clouds": True,
+            "fog_color": atmo.get("fg", atmo.get("fog_color")),
+            "fog_density": atmo.get("fd", atmo.get("fog_density", 0.01)),
+            "sky_color": atmo.get("sk", atmo.get("sky_color")),
+            "sun_color": atmo.get("su", atmo.get("sun_color")),
+            "ambient_color": atmo.get("am", atmo.get("ambient_color")),
+        },
+        "prop_list": props or data.get("prop_list") or [],
+        "post_process": post,
+    }
+
+
+def _expand_feature(feat):
+    if isinstance(feat, dict):
+        kind = FEAT_ALIAS.get(str(feat.get("type") or ""), feat.get("type"))
+        if kind:
+            feat = dict(feat)
+            feat["type"] = kind
+        return feat
+    if not isinstance(feat, (list, tuple)) or not feat:
+        return None
+    kind = FEAT_ALIAS.get(str(feat[0]), feat[0])
+    item = {"type": kind}
+    if kind in ("river", "ridge"):
+        item["points"] = feat[1] if len(feat) > 1 else []
+        item["width"] = feat[2] if len(feat) > 2 else 0.05
+        if kind == "river":
+            item["depth"] = feat[3] if len(feat) > 3 else 0.4
+        else:
+            item["height"] = feat[3] if len(feat) > 3 else 0.35
+    else:
+        item["center"] = feat[1] if len(feat) > 1 else [0.5, 0.5]
+        item["radius"] = feat[2] if len(feat) > 2 else 0.12
+        if kind in ("lake", "basin"):
+            item["depth"] = feat[3] if len(feat) > 3 else 0.35
+        else:
+            item["height"] = feat[3] if len(feat) > 3 else 0.3
+    return item
+
+
+def _expand_prop(data: dict) -> dict:
+    primitives = []
+    for prim in data.get("g") or []:
+        expanded = _expand_primitive(prim)
+        if expanded:
+            primitives.append(expanded)
+    uniforms = {}
+    raw_u = data.get("u") or {}
+    if isinstance(raw_u, dict):
+        for name, value in raw_u.items():
+            if isinstance(value, dict) and "type" in value:
+                uniforms[name] = value
+            elif isinstance(value, (list, tuple)):
+                uniforms[name] = {"type": f"vec{len(value)}", "value": list(value)}
+            else:
+                uniforms[name] = {"type": "float", "value": value}
+    inst = data.get("i")
+    if isinstance(inst, (list, tuple)) and inst:
+        instances = {
+            "count": int(inst[0]),
+            "distribution": DIST_ALIAS.get(str(inst[1]), inst[1]) if len(inst) > 1 else "scattered",
+            "scale_range": inst[2] if len(inst) > 2 else [0.8, 1.2],
+        }
+    else:
+        instances = inst if isinstance(inst, dict) else {"count": 8, "distribution": "scattered"}
+    fs = data.get("fs") or data.get("fragment_lines")
+    ls = data.get("ls")
+    lv = data.get("lv")
+    shader = {
+        "fragment_lines": fs if isinstance(fs, list) else None,
+        "fragment": None if isinstance(fs, list) else fs,
+        "leaf_fragment_lines": ls if isinstance(ls, list) else None,
+        "leaf_fragment": None if isinstance(ls, list) else ls,
+        "leaf_vertex_lines": lv if isinstance(lv, list) else None,
+        "leaf_vertex": None if isinstance(lv, list) else lv,
+        "uniforms": uniforms,
+    }
+    return {
+        "name": data.get("n") or data.get("name"),
+        "geometry": {"primitives": primitives},
+        "shader": shader,
+        "instances": instances,
+    }
+
+
+def _expand_primitive(prim):
+    if isinstance(prim, dict):
+        ptype = PRIM_ALIAS.get(str(prim.get("type") or "").lower(), prim.get("type"))
+        item = dict(prim)
+        item["type"] = ptype
+        return item
+    if not isinstance(prim, (list, tuple)) or not prim:
+        return None
+    ptype = PRIM_ALIAS.get(str(prim[0]).lower(), prim[0])
+    values = prim[1] if len(prim) > 1 and isinstance(prim[1], (list, tuple)) else []
+    keys = PRIM_PARAMS.get(ptype, ())
+    params = {keys[i]: values[i] for i in range(min(len(keys), len(values)))}
+    item = {"type": ptype, "params": params}
+    if len(prim) > 2 and prim[2]:
+        item["position"] = prim[2]
+    if len(prim) > 3 and prim[3]:
+        item["rotation"] = prim[3]
+    if len(prim) > 4 and prim[4] is not None:
+        item["scale"] = prim[4]
+    return item
 
 
 def _join_shader_lines(value) -> str:
@@ -297,7 +472,24 @@ def _normalize_shader_fields(data: dict) -> dict:
             shader["fragment"] = _join_shader_lines(shader.get("fragment_lines"))
         if not shader.get("vertex"):
             shader["vertex"] = _join_shader_lines(shader.get("vertex_lines"))
+        if not shader.get("leaf_fragment"):
+            shader["leaf_fragment"] = _join_shader_lines(shader.get("leaf_fragment_lines"))
+        if not shader.get("leaf_vertex"):
+            shader["leaf_vertex"] = _join_shader_lines(shader.get("leaf_vertex_lines"))
         data["shader"] = shader
+    if data.get("ts") and isinstance(data.get("terrain"), dict) and not (data["terrain"].get("shader") or {}).get("fragment"):
+        ts = data["ts"]
+        data["terrain"]["shader"] = {
+            "fragment_lines": ts if isinstance(ts, list) else None,
+            "fragment": None if isinstance(ts, list) else ts,
+        }
+    terrain = data.get("terrain")
+    if isinstance(terrain, dict) and isinstance(terrain.get("shader"), dict):
+        tsh = terrain["shader"]
+        if not tsh.get("fragment"):
+            tsh["fragment"] = _join_shader_lines(tsh.get("fragment_lines"))
+        terrain["shader"] = tsh
+        data["terrain"] = terrain
     post = data.get("post_process")
     if isinstance(post, dict) and isinstance(post.get("shader"), dict):
         post_shader = post["shader"]
@@ -316,7 +508,7 @@ def _chat(
     model: str,
     max_tokens: int,
     label: str,
-    attempts: int = 3,
+    attempts: int = 5,
 ) -> dict:
     started = time.perf_counter()
     messages = [
@@ -339,31 +531,41 @@ def _chat(
             }
             response = _client.chat.completions.create(**kwargs)
         except Exception as exc:
-            log.exception("AI HTTP error [%s] attempt=%s", label, attempt)
+            text = str(exc).lower()
+            busy = any(word in text for word in ("503", "capacity", "unavailable", "overloaded", "timeout"))
+            if busy:
+                wait = min(8 * attempt, 32)
+                log.warning("AI busy [%s] attempt=%s, wait %ss: %s", label, attempt, wait, exc)
+            else:
+                log.exception("AI HTTP error [%s] attempt=%s", label, attempt)
+                wait = min(3 * attempt, 10)
             last_error = AIGenerationError(f"Ошибка запроса к AI ({label}): {exc}")
-            time.sleep(min(2 * attempt, 6))
+            time.sleep(wait)
             continue
 
         content = ""
+        finish = None
         if response.choices:
             content = response.choices[0].message.content or ""
+            finish = getattr(response.choices[0], "finish_reason", None)
         log.info(
-            "AI response [%s] attempt=%s out_chars=%s time=%.2fs",
-            label, attempt, len(content), time.perf_counter() - started,
+            "AI response [%s] attempt=%s out_chars=%s finish=%s time=%.2fs",
+            label, attempt, len(content), finish, time.perf_counter() - started,
         )
         if not content.strip():
             last_error = AIGenerationError(f"Пустой ответ AI ({label})")
             log.warning("Empty AI response [%s] attempt=%s, retry", label, attempt)
             time.sleep(min(2 * attempt, 6))
-            messages.append({"role": "user", "content": JSON_RETRY_HINT})
             continue
         try:
             return _parse_json(content)
         except AIGenerationError as exc:
             last_error = exc
-            log.warning("JSON parse failed [%s] attempt=%s: %s", label, attempt, exc)
-            messages.append({"role": "assistant", "content": content[:8000]})
-            messages.append({"role": "user", "content": JSON_RETRY_HINT})
+            log.warning("JSON parse failed [%s] attempt=%s finish=%s: %s", label, attempt, finish, exc)
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt + "\n" + JSON_RETRY_HINT},
+            ]
     raise last_error or AIGenerationError(f"Не удалось получить JSON от AI ({label})")
 
 
@@ -371,13 +573,10 @@ def generate_world_metadata(user_prompt: str, model: str | None = None) -> dict:
     """Этап 1: метаданные мира, террейн, атмосфера, список пропсов, пост-процесс."""
     chosen = model or MODEL
     user = (
-        "Сгенерируй метаданные ретро-RTS уровня по промпту пользователя.\n"
-        "Промпт:\n"
-        f"{user_prompt.strip()}\n"
-        "Подбери биом, features ландшафта (река/впадина/хребет если уместно), "
-        "синее дневное небо если не сказано иное, 4-8 пропсов и мягкий пост-процесс."
+        f"prompt:{user_prompt.strip()}\n"
+        "compact JSON only. 4-6 props. river feature if water mentioned."
     )
-    data = _chat(METADATA_SYSTEM_PROMPT, user, chosen, 4000, "metadata")
+    data = _chat(METADATA_SYSTEM_PROMPT, user, chosen, METADATA_MAX_TOKENS, "metadata")
     if not data.get("prop_list"):
         raise AIGenerationError("AI не вернул prop_list")
     if not isinstance(data["prop_list"], list) or len(data["prop_list"]) < 4:
@@ -390,23 +589,21 @@ def generate_world_metadata(user_prompt: str, model: str | None = None) -> dict:
 def generate_prop(user_prompt: str, world_meta: dict, prop_spec: dict, model: str | None = None) -> dict:
     """Этап 2: геометрия + уникальный GLSL-материал одного пропа."""
     chosen = model or MODEL
-    spec_json = json.dumps(prop_spec, ensure_ascii=False)
-    style = json.dumps(
-        {
-            "world_name": world_meta.get("world_name"),
-            "description": world_meta.get("description"),
-            "style": world_meta.get("style"),
-            "atmosphere": world_meta.get("atmosphere"),
-        },
-        ensure_ascii=False,
-    )
+    spec = {
+        "n": prop_spec.get("name"),
+        "cat": prop_spec.get("category"),
+        "cnt": prop_spec.get("count"),
+        "dist": prop_spec.get("distribution") or "sc",
+    }
     user = (
-        f"Мир: {style}\n"
-        f"Промпт игрока: {user_prompt.strip()}\n"
-        f"Сгенерируй ТОЛЬКО этот проп: {spec_json}\n"
-        "Материал должен быть уникальным и стилизованным под ретро-RTS."
+        f"world:{world_meta.get('world_name')}\n"
+        f"prompt:{user_prompt.strip()}\n"
+        f"prop:{json.dumps(spec, ensure_ascii=False)}\n"
+        "compact JSON, keep fs shader lines full."
     )
-    data = _chat(PROP_SYSTEM_PROMPT, user, chosen, 4000, f"prop:{prop_spec.get('name')}")
+    n_props = max(1, len(world_meta.get("prop_list") or []))
+    prop_tokens = max(2500, (SCENE_MAX_TOKENS - METADATA_MAX_TOKENS) // n_props)
+    data = _chat(PROP_SYSTEM_PROMPT, user, chosen, prop_tokens, f"prop:{prop_spec.get('name')}")
     name = data.get("name") or prop_spec.get("name")
     data["name"] = name
     primitives = (data.get("geometry") or {}).get("primitives") or []
@@ -425,7 +622,7 @@ def generate_props_parallel(
     user_prompt: str,
     world_meta: dict,
     model: str | None = None,
-    max_workers: int = 3,
+    max_workers: int = 2,
 ) -> dict:
     """Параллельно генерирует все пропсы. Упавший проп пропускается; если все упали — ошибка."""
     prop_list = world_meta["prop_list"][:8]

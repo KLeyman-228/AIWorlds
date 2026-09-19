@@ -8,7 +8,7 @@ import logging
 
 import numpy as np
 
-from .terrain import HEIGHT_SCALE, TERRAIN_SIZE, sample_height_uv, world_to_uv
+from .terrain import HEIGHT_SCALE, TERRAIN_SIZE, river_clearance_uv, sample_height_uv, world_to_uv
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,14 @@ MAP_SIZE = TERRAIN_SIZE
 VALID_DISTRIBUTIONS = ("scattered", "forest", "cluster", "river_line")
 
 
-def place_instances(rule: dict, seed: int = 42, heightmap=None) -> list[dict]:
+def place_instances(
+    rule: dict,
+    seed: int = 42,
+    heightmap=None,
+    features=None,
+    water_level=None,
+    keep_dry: bool = True,
+) -> list[dict]:
     """Превращает правило инстансов в список {position, rotation, scale}."""
     if not isinstance(rule, dict):
         raise ValueError("instances должен быть объектом-правилом")
@@ -24,12 +31,13 @@ def place_instances(rule: dict, seed: int = 42, heightmap=None) -> list[dict]:
     count = int(rule.get("count") or 0)
     if count < 1:
         raise ValueError("instances.count должен быть >= 1")
-    count = min(count, 80)
+    count = min(count, 18)
 
     distribution = str(rule.get("distribution") or "scattered").lower()
     if distribution not in VALID_DISTRIBUTIONS:
         log.warning("Unknown distribution %s, using scattered", distribution)
         distribution = "scattered"
+    stay_dry = keep_dry and distribution != "river_line"
 
     scale_range = rule.get("scale_range") or [0.8, 1.2]
     if not isinstance(scale_range, (list, tuple)) or len(scale_range) < 2:
@@ -39,24 +47,32 @@ def place_instances(rule: dict, seed: int = 42, heightmap=None) -> list[dict]:
         lo, hi = hi, lo
 
     rng = np.random.default_rng(int(seed) + count * 17)
-    xs, zs = _sample_xz(rng, count, distribution)
-
+    wet_cut = None if water_level is None else float(water_level) + 0.045
     instances = []
-    for x, z in zip(xs, zs):
+    attempts = 0
+    max_attempts = count * 24
+    while len(instances) < count and attempts < max_attempts:
+        attempts += 1
+        xs, zs = _sample_xz(rng, 1, distribution)
+        x, z = float(xs[0]), float(zs[0])
+        u, v = world_to_uv(x, z)
+        y_norm = sample_height_uv(heightmap, u, v) if heightmap is not None else 0.35
+        if stay_dry:
+            if wet_cut is not None and y_norm <= wet_cut:
+                continue
+            clearance = river_clearance_uv(u, v, features)
+            if clearance is not None and clearance < 1.35:
+                continue
         yaw = float(rng.uniform(0, 360))
         scale = float(rng.uniform(lo, hi))
-        y = 0.0
-        if heightmap is not None:
-            u, v = world_to_uv(float(x), float(z))
-            y = sample_height_uv(heightmap, u, v) * HEIGHT_SCALE
         instances.append(
             {
-                "position": [float(x), float(y), float(z)],
+                "position": [x, float(y_norm * HEIGHT_SCALE), z],
                 "rotation": [0.0, yaw, 0.0],
                 "scale": scale,
             }
         )
-    log.info("Instances placed dist=%s count=%s", distribution, len(instances))
+    log.info("Instances placed dist=%s count=%s dry=%s", distribution, len(instances), stay_dry)
     return instances
 
 
