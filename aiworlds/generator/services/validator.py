@@ -142,14 +142,7 @@ def _validate_features(features) -> list:
             else:
                 item["height"] = _clamped(feat.get("height"), 0.1, 0.8, 0.35)
         else:
-            center = feat.get("center")
-            if isinstance(center, (list, tuple)) and len(center) >= 2:
-                item["center"] = [
-                    max(0.0, min(1.0, float(center[0]))),
-                    max(0.0, min(1.0, float(center[1]))),
-                ]
-            else:
-                item["center"] = [0.5, 0.5]
+            item["center"] = _uv_pair(feat.get("center"), [0.5, 0.5])
             item["radius"] = _clamped(feat.get("radius"), 0.04, 0.4, 0.12)
             if kind in ("lake", "basin"):
                 item["depth"] = _clamped(feat.get("depth"), 0.1, 0.8, 0.4)
@@ -162,19 +155,39 @@ def _validate_features(features) -> list:
     return cleaned
 
 
+def _uv_num(value, default=0.5) -> float:
+    while isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _uv_pair(value, default=None) -> list[float]:
+    fallback = default or [0.5, 0.5]
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        return [_uv_num(value[0], fallback[0]), _uv_num(value[1], fallback[1])]
+    if isinstance(value, (list, tuple)) and len(value) == 1:
+        return _uv_pair(value[0], fallback)
+    return list(fallback)
+
+
 def _uv_points(points, min_count=2):
     if not isinstance(points, list):
         return []
     cleaned = []
     for pt in points[:12]:
-        if isinstance(pt, (list, tuple)) and len(pt) >= 2:
-            cleaned.append(
-                [max(0.0, min(1.0, float(pt[0]))), max(0.0, min(1.0, float(pt[1])))]
-            )
+        pair = _uv_pair(pt, None)
+        if pair is None:
+            continue
+        cleaned.append(pair)
     return cleaned if len(cleaned) >= min_count else []
 
 
 def _clamped(value, lo, hi, default):
+    while isinstance(value, (list, tuple)) and value:
+        value = value[0]
     try:
         return max(lo, min(hi, float(value)))
     except (TypeError, ValueError):
@@ -404,8 +417,17 @@ def _vec3(value) -> list[float]:
 
 
 def _validate_post_process(pp) -> dict:
-    if not isinstance(pp, dict):
-        raise PlanValidationError("Нет post_process от AI")
+    if not isinstance(pp, dict) or not (pp.get("shader") or {}).get("fragment"):
+        return {
+            "shader": {
+                "vertex": POST_VERTEX_SHADER,
+                "fragment": (
+                    "uniform sampler2D tDiffuse; varying vec2 vUv; "
+                    "void main(){ gl_FragColor = texture2D(tDiffuse, vUv); }"
+                ),
+                "uniforms": {"uTime": {"type": "float", "value": 0}},
+            }
+        }
     shader = _validate_shader(pp.get("shader"), is_post=True)
     return {"shader": shader}
 

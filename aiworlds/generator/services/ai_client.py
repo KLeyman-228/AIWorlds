@@ -58,13 +58,16 @@ JSON_RETRY_HINT = (
 METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dota/Civ3). Верни ТОЛЬКО компактный JSON.
 
 Схема:
-{"n":"имя","d":"1 фраза","t":{"sc":45,"oc":4,"sd":42,"w":0.18,"g":[[0,[30,90,40]],[1,[90,70,40]]],"f":[["rv",[[0.1,0.4],[0.9,0.55]],0.05,0.4]]},"ts":["varying vec2 vUv;","varying vec3 vWorldPos;","uniform float uTime;","void main(){ float n=fract(sin(dot(floor(vWorldPos.xz*8.0),vec2(12.9,78.2)))*43758.5); vec3 c=mix(vec3(0.18,0.42,0.12),vec3(0.32,0.62,0.16),step(0.5,n)); gl_FragColor=vec4(c,1.0); }"],"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",10,"fr"]],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
+{"n":"имя","d":"1 фраза","t":{"sc":45,"oc":4,"sd":42,"w":0.18,"g":[[0,[30,90,40]],[1,[90,70,40]]],"f":[["rv",[[0.1,0.4],[0.9,0.55]],0.05,0.4]]},"tm":{"grass":[0.18,0.46,0.12],"dirt":[0.28,0.20,0.10],"rock":[0.40,0.38,0.34]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",10,"fr","oak",{"bark":[0.32,0.18,0.08],"leaf":[0.18,0.5,0.12],"size":1.0}]],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
 
-Ключи: n имя, d описание, t террейн, ts fragment ландшафта, a атмосфера, p пропы, pp постпроцесс.
-t.w уровень воды 0.12-0.22 — код рисует ПЛОСКОСТЬ воды.
-t.g 6 ретро-ступеней. t.f фичи UV: rv река, lk озеро.
-ts: 28-50 строк GLSL ES1 fragment ландшафта. Шум ТОЛЬКО от vWorldPos.xz / vWorldPos.y. ЗАПРЕЩЕНО: cameraPosition, gl_FragCoord, viewDir, fresnel. Биомы по vWorldPos.y. Склон по world-normal.y. Lambert от фиксированного vec3(0.4,0.85,0.2). dither от vWorldPos.xz.
-a.td day, sk голубой. p 4-6 пропов count<=14. Не делай проп-поляну.
+Ключи: n имя, d описание, t террейн, tm цвета ландшафта, a атмосфера, p пропы, pp постпроцесс.
+t.w вода 0.12-0.22. t.g 6 ретро-ступеней. t.f: rv река, lk озеро.
+tm: grass/dirt/rock 0-1. ts (кастомный fragment ландшафта) пиши ТОЛЬКО если биом нельзя описать tm (лава, снег, кристалл). Иначе tm хватает.
+Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower.
+p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower ИЛИ "x" если нужен кастомный меш/шейдер.
+params для дерева: bark, leaf, size. камень: rock. цветок: petal, stem. Цвета 0-1. size 0.6-1.6.
+Кастом (tpl=x) только если заготовки не хватает (кристалл, мост, руина, синее дерево-не-oak).
+a.td day, sk голубой. 4-6 пропов count<=14. Не делай проп-поляну.
 JSON компактный, без markdown.
 """
 
@@ -307,14 +310,20 @@ def _expand_metadata(data: dict) -> dict:
     for item in data.get("p") or []:
         if isinstance(item, (list, tuple)) and len(item) >= 3:
             dist = DIST_ALIAS.get(str(item[3]), item[3]) if len(item) > 3 else "scattered"
-            props.append(
-                {
-                    "name": item[0],
-                    "category": CAT_ALIAS.get(str(item[1]), item[1]),
-                    "count": int(item[2]),
-                    "distribution": dist,
-                }
-            )
+            entry = {
+                "name": item[0],
+                "category": CAT_ALIAS.get(str(item[1]), item[1]),
+                "count": int(item[2]),
+                "distribution": dist,
+            }
+            if len(item) > 4 and item[4] not in (None, ""):
+                entry["template"] = item[4]
+            if len(item) > 5 and isinstance(item[5], dict):
+                entry["params"] = item[5]
+                for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss"):
+                    if key in item[5]:
+                        entry[key] = item[5][key]
+            props.append(entry)
         elif isinstance(item, dict):
             props.append(item)
     gradient = []
@@ -347,6 +356,7 @@ def _expand_metadata(data: dict) -> dict:
             "color_gradient": gradient or terrain.get("color_gradient"),
             "features": features or terrain.get("features") or [],
             "shader": terrain_shader or terrain.get("shader"),
+            "material": data.get("tm") or terrain.get("material") or {},
         },
         "atmosphere": {
             "time_of_day": atmo.get("td", atmo.get("time_of_day", "day")),
@@ -574,15 +584,13 @@ def generate_world_metadata(user_prompt: str, model: str | None = None) -> dict:
     chosen = model or MODEL
     user = (
         f"prompt:{user_prompt.strip()}\n"
-        "compact JSON only. 4-6 props. river feature if water mentioned."
+        "Prefer templates oak/birch/pine/bush/boulder/flower. custom tpl=x only if needed."
     )
     data = _chat(METADATA_SYSTEM_PROMPT, user, chosen, METADATA_MAX_TOKENS, "metadata")
     if not data.get("prop_list"):
         raise AIGenerationError("AI не вернул prop_list")
-    if not isinstance(data["prop_list"], list) or len(data["prop_list"]) < 4:
-        raise AIGenerationError("Нужно минимум 4 пропа в prop_list")
-    if not data.get("post_process", {}).get("shader", {}).get("fragment"):
-        raise AIGenerationError("AI не вернул fragment шейдер пост-процесса")
+    if not isinstance(data["prop_list"], list) or len(data["prop_list"]) < 3:
+        raise AIGenerationError("Нужно минимум 3 пропа в prop_list")
     return data
 
 
@@ -624,28 +632,44 @@ def generate_props_parallel(
     model: str | None = None,
     max_workers: int = 2,
 ) -> dict:
-    """Параллельно генерирует все пропсы. Упавший проп пропускается; если все упали — ошибка."""
+    """Шаблоны копируются сразу. Кастомные пропы генерируются параллельно."""
+    from .templates import instantiate_prop, wants_custom
+
     prop_list = world_meta["prop_list"][:8]
     props = {}
     errors = []
+    custom_specs = []
     started = time.perf_counter()
-    log.info("Prop generation start count=%s workers=%s", len(prop_list), max_workers)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {
-            pool.submit(generate_prop, user_prompt, world_meta, spec, model): spec
-            for spec in prop_list
-        }
-        for future in as_completed(futures):
-            spec = futures[future]
-            name = spec.get("name", "?")
+    for spec in prop_list:
+        name = spec.get("name", "?")
+        if not wants_custom(spec):
             try:
-                prop = future.result()
+                prop = instantiate_prop(spec)
                 props[prop["name"]] = prop
-                log.info("Prop ready: %s", prop["name"])
+                log.info("Prop template: %s -> %s", name, prop.get("template"))
+                continue
             except Exception as exc:
-                log.exception("Prop failed: %s", name)
-                errors.append(f"{name}: {exc}")
+                log.warning("Template miss %s, fallback to AI: %s", name, exc)
+        custom_specs.append(spec)
+
+    log.info("Prop generation templates=%s custom=%s", len(props), len(custom_specs))
+    if custom_specs:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(generate_prop, user_prompt, world_meta, spec, model): spec
+                for spec in custom_specs
+            }
+            for future in as_completed(futures):
+                spec = futures[future]
+                name = spec.get("name", "?")
+                try:
+                    prop = future.result()
+                    props[prop["name"]] = prop
+                    log.info("Prop ready: %s", prop["name"])
+                except Exception as exc:
+                    log.exception("Prop failed: %s", name)
+                    errors.append(f"{name}: {exc}")
 
     elapsed = time.perf_counter() - started
     log.info("Prop generation done ok=%s fail=%s time=%.2fs", len(props), len(errors), elapsed)

@@ -17,6 +17,7 @@ from .terrain import (
     generate_heightmap,
     heightmap_to_js_array,
 )
+from .templates import instantiate_terrain_shader
 from .validator import validate_and_place_props, validate_plan
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,11 @@ def build_world_js(user_prompt: str, model: str | None = None, progress=None) ->
     meta["props"] = props
 
     plan = validate_plan(meta)
+    custom_terrain = ((plan.get("terrain") or {}).get("shader") or {}).get("fragment")
+    if not custom_terrain:
+        plan["terrain"]["shader"] = instantiate_terrain_shader(
+            (plan.get("terrain") or {}).get("material")
+        )
 
     _status("terrain_generating")
     heightmap = generate_heightmap(

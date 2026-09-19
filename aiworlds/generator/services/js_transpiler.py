@@ -394,6 +394,10 @@ const terrainShader = {{
   uniforms: {{
     uTime: {{ value: 0 }},
     uMap: {{ value: colorTex }},
+    uGrass: {{ value: new THREE.Vector3({u_grass}) }},
+    uDirt: {{ value: new THREE.Vector3({u_dirt}) }},
+    uRock: {{ value: new THREE.Vector3({u_rock}) }},
+{terrain_extra_uniforms}
   }},
   vertexShader: {terrain_vertex_json},
   fragmentShader: {terrain_fragment_json},
@@ -597,7 +601,13 @@ void main() {
   c = floor(c * 8.0 + 0.5) / 8.0;
   c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.03;
   gl_FragColor = vec4(c, 1.0);
-}"""
+}""")
+    tu = (tsh.get("uniforms") or {}) if isinstance(tsh, dict) else {}
+    grass = _vec3_uniform(tu.get("uGrass"), (0.22, 0.52, 0.16))
+    dirt = _vec3_uniform(tu.get("uDirt"), (0.32, 0.22, 0.12))
+    rock = _vec3_uniform(tu.get("uRock"), (0.42, 0.40, 0.36))
+    extra = {k: v for k, v in tu.items() if k not in ("uTime", "uMap", "uGrass", "uDirt", "uRock")}
+    extra_lines = _build_uniforms_lines(extra)
     parts.append(JS_TERRAIN.format(
         heightmap_js=heightmap_js,
         heightmap_res=128,
@@ -609,6 +619,10 @@ void main() {
         lake_spots_json="[]",
         terrain_vertex_json=json.dumps(TERRAIN_VERTEX),
         terrain_fragment_json=json.dumps(terrain_fragment),
+        u_grass=f"{grass[0]}, {grass[1]}, {grass[2]}",
+        u_dirt=f"{dirt[0]}, {dirt[1]}, {dirt[2]}",
+        u_rock=f"{rock[0]}, {rock[1]}, {rock[2]}",
+        terrain_extra_uniforms=(extra_lines + ",") if extra_lines else "",
     ))
 
     # --- Props ---
@@ -699,6 +713,17 @@ void main() {
 # ============================================================
 # ХЕЛПЕРЫ
 # ============================================================
+
+def _vec3_uniform(cfg, fallback):
+    if isinstance(cfg, dict):
+        val = cfg.get("value")
+        if isinstance(val, (list, tuple)) and len(val) >= 3:
+            nums = [float(val[0]), float(val[1]), float(val[2])]
+            if max(nums) > 1.5:
+                nums = [n / 255.0 for n in nums]
+            return nums
+    return list(fallback)
+
 
 def _stabilize_terrain_fragment(src: str) -> str:
     """Цвет ландшафта только от мира, не от камеры/экрана."""

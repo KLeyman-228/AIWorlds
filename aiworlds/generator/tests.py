@@ -2,6 +2,7 @@ from django.test import SimpleTestCase
 
 from generator.services.ai_client import _parse_json
 from generator.services.instances import place_instances
+from generator.services.templates import instantiate_prop, resolve_template_id, wants_custom
 from generator.services.terrain import apply_features, generate_color_map, generate_heightmap
 from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan
 
@@ -101,6 +102,28 @@ class InstancePlacementTests(SimpleTestCase):
             self.assertGreater(abs(inst["position"][2]), 1.2)
 
 
+class TemplateTests(SimpleTestCase):
+    def test_resolves_oak_from_name(self):
+        self.assertEqual(resolve_template_id("old_oak"), "oak")
+        self.assertFalse(wants_custom({"name": "oak", "template": "oak"}))
+        self.assertTrue(wants_custom({"name": "crystal", "template": "x"}))
+
+    def test_blue_leaves_on_oak_template(self):
+        prop = instantiate_prop({
+            "name": "blue_oak",
+            "template": "oak",
+            "count": 6,
+            "distribution": "forest",
+            "leaf": [0.2, 0.3, 0.9],
+            "bark": [0.3, 0.15, 0.08],
+            "size": 1.2,
+        })
+        self.assertEqual(prop["template"], "oak")
+        self.assertGreater(len(prop["geometry"]["primitives"]), 2)
+        self.assertEqual(prop["shader"]["uniforms"]["uLeaf"]["value"][2], 0.9)
+        self.assertIn("uBark", prop["shader"]["uniforms"])
+
+
 class TerrainFeatureTests(SimpleTestCase):
     def test_river_lowers_center_of_map(self):
         base = generate_heightmap(size=32, scale=20, octaves=2, seed=3, features=[])
@@ -165,6 +188,38 @@ class ValidatorTests(SimpleTestCase):
         )
         self.assertGreater(plan["atmosphere"]["sky_color"][2], plan["atmosphere"]["sky_color"][0])
         self.assertEqual(len(plan["terrain"]["features"]), 1)
+
+    def test_nested_feature_center(self):
+        plan = validate_plan(
+            {
+                "world_name": "X",
+                "terrain": {
+                    "scale": 40,
+                    "octaves": 3,
+                    "seed": 1,
+                    "color_gradient": [
+                        {"height": 0, "color": [10, 20, 30]},
+                        {"height": 1, "color": [40, 50, 60]},
+                    ],
+                    "features": [
+                        {"type": "lake", "center": [[0.4], [0.6]], "radius": [0.1], "depth": ["0.3"]}
+                    ],
+                },
+                "atmosphere": {
+                    "fog_color": [170, 200, 230],
+                    "fog_density": 0.01,
+                    "sky_color": [135, 185, 235],
+                    "sun_color": [255, 240, 200],
+                    "ambient_color": [120, 140, 160],
+                    "time_of_day": "day",
+                },
+                "post_process": {
+                    "shader": {"fragment": "void main(){ gl_FragColor = vec4(1.0); }"}
+                },
+            }
+        )
+        self.assertEqual(plan["terrain"]["features"][0]["center"], [0.4, 0.6])
+        self.assertAlmostEqual(plan["terrain"]["features"][0]["radius"], 0.1)
 
     def test_expands_instance_rules(self):
         props = validate_and_place_props(
