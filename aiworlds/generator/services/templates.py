@@ -23,11 +23,19 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * wp;
 }"""
 
+EMISSION_TAIL = """
+  c += c * uEm * (0.55 + 0.45 * sin(uTime * 2.6 + vPosition.y * 5.0));
+  c = floor(c * 8.0 + 0.5) / 8.0;
+  gl_FragColor = vec4(c, 1.0);
+}"""
+
 BARK_FRAGMENT = """varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uBark;
 uniform vec3 uMoss;
+uniform float uEm;
+uniform float uTime;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
 float n2(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
@@ -44,16 +52,15 @@ void main() {
   c = mix(c, uBark * 0.45, groove * 0.7);
   float moss = (1.0 - clamp(vPosition.y * 0.7, 0.0, 1.0)) * step(0.5, n2(vPosition.xz * 8.0));
   c = mix(c, uMoss, moss * 0.65);
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
-  c = floor(c * 8.0 + 0.5) / 8.0;
-  gl_FragColor = vec4(c, 1.0);
-}"""
+  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);""" + EMISSION_TAIL
 
 LEAF_FRAGMENT = """varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uLeaf;
 uniform vec3 uLeafDark;
+uniform float uEm;
+uniform float uTime;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 float n2(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
@@ -67,15 +74,14 @@ void main() {
   vec3 c = mix(uLeafDark, uLeaf, step(0.42, clump));
   c = mix(c, lite, step(0.72, clump));
   c = mix(c, uLeafDark * 0.45, step(0.82, n2(uv * 3.3)));
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);
-  c = floor(c * 8.0 + 0.5) / 8.0;
-  gl_FragColor = vec4(c, 1.0);
-}"""
+  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
 
 ROCK_FRAGMENT = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uRock;
 uniform vec3 uMoss;
+uniform float uEm;
+uniform float uTime;
 float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
 float n3(vec3 p){
   vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
@@ -88,33 +94,69 @@ void main() {
   c = mix(c, uRock * 0.4, crack * 0.7);
   float moss = step(0.55, n.y) * step(0.45, n3(vPosition * 8.0));
   c = mix(c, uMoss, moss * 0.55);
-  c *= 0.5 + 0.5 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
-  c = floor(c * 7.0 + 0.5) / 7.0;
-  gl_FragColor = vec4(c, 1.0);
-}"""
+  c *= 0.5 + 0.5 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);""" + EMISSION_TAIL
 
 FLOWER_STEM = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uStem;
+uniform float uEm;
+uniform float uTime;
 void main() {
   float n = fract(sin(dot(floor(vPosition.xy * 18.0), vec2(12.9, 78.2))) * 43758.5);
   vec3 c = mix(uStem * 0.7, uStem, step(0.5, n));
-  c *= 0.6 + 0.4 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);
-  gl_FragColor = vec4(c, 1.0);
-}"""
+  c *= 0.6 + 0.4 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
 
 FLOWER_PETAL = """varying vec2 vUv;
 varying vec3 vNormal;
+varying vec3 vPosition;
 uniform vec3 uPetal;
+uniform float uEm;
+uniform float uTime;
 void main() {
   float r = length(vUv - vec2(0.5)) * 2.0;
   float n = fract(sin(dot(floor(vUv * 16.0), vec2(26.7, 91.3))) * 24634.6);
   vec3 core = vec3(0.95, 0.78, 0.18);
   vec3 c = mix(core, uPetal, step(0.28, r));
   c = mix(c, uPetal * 1.2, step(0.65, n) * 0.4);
-  c *= 0.7 + 0.3 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);
-  gl_FragColor = vec4(c, 1.0);
-}"""
+  c *= 0.7 + 0.3 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+
+CRYSTAL_FRAGMENT = """varying vec3 vNormal;
+varying vec3 vPosition;
+uniform vec3 uCrystal;
+uniform float uEm;
+uniform float uTime;
+void main() {
+  vec3 n = normalize(vNormal);
+  float bands = abs(fract(vPosition.y * 6.0 + vPosition.x * 3.0) - 0.5);
+  vec3 c = mix(uCrystal * 0.55, uCrystal * 1.35, smoothstep(0.05, 0.28, bands));
+  float edge = pow(1.0 - abs(n.y), 2.0);
+  c += uCrystal * edge * 0.25;
+  c *= 0.7 + 0.3 * max(dot(n, normalize(vec3(0.3, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+
+HAY_FRAGMENT = """varying vec3 vNormal;
+varying vec3 vPosition;
+uniform vec3 uHay;
+uniform float uEm;
+uniform float uTime;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9, 78.2))) * 43758.5); }
+void main() {
+  vec3 n = normalize(vNormal);
+  float straw = step(0.45, fract(vPosition.y * 18.0 + vPosition.x * 9.0));
+  vec3 c = mix(uHay * 0.7, uHay * 1.15, straw);
+  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
+  c += vec3(0.04, 0.03, 0.01) * hash(floor(vPosition.xz * 12.0));""" + EMISSION_TAIL
+
+MUSHROOM_CAP = """varying vec3 vNormal;
+varying vec3 vPosition;
+uniform vec3 uCap;
+uniform float uEm;
+uniform float uTime;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5); }
+void main() {
+  vec3 n = normalize(vNormal);
+  float spots = step(0.78, hash(floor(vPosition.xz * 9.0 + vPosition.y * 4.0)));
+  vec3 c = mix(uCap, vec3(0.92, 0.88, 0.78), spots * 0.85);
+  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
 
 TERRAIN_FRAGMENT = """varying vec3 vNormal;
 varying vec3 vWorldPos;
@@ -194,6 +236,39 @@ FLOWER_GEO = {
         {"type": "sphere", "params": {"radius": 0.075, "widthSegments": 5, "heightSegments": 4}, "position": [0.0, 0.52, 0.1]},
     ]
 }
+MUSHROOM_GEO = {
+    "primitives": [
+        {"type": "cylinder", "params": {"rTop": 0.06, "rBottom": 0.09, "height": 0.32, "segments": 6}, "position": [0.0, 0.16, 0.0]},
+        {"type": "sphere", "params": {"radius": 0.22, "widthSegments": 7, "heightSegments": 4}, "position": [0.0, 0.38, 0.0], "scale": [1.0, 0.55, 1.0]},
+        {"type": "cone", "params": {"radius": 0.24, "height": 0.16, "segments": 7}, "position": [0.0, 0.34, 0.0]},
+        {"type": "sphere", "params": {"radius": 0.05, "widthSegments": 5, "heightSegments": 4}, "position": [0.12, 0.36, 0.06]},
+    ]
+}
+CRYSTAL_GEO = {
+    "primitives": [
+        {"type": "octahedron", "params": {"radius": 0.42}, "position": [0.0, 0.46, 0.0]},
+        {"type": "octahedron", "params": {"radius": 0.22}, "position": [0.18, 0.28, 0.08], "rotation": [18.0, 25.0, 0.0]},
+        {"type": "tetrahedron", "params": {"radius": 0.16}, "position": [-0.16, 0.22, -0.1], "rotation": [12.0, -20.0, 8.0]},
+        {"type": "cylinder", "params": {"rTop": 0.04, "rBottom": 0.1, "height": 0.18, "segments": 6}, "position": [0.0, 0.08, 0.0]},
+    ]
+}
+RUIN_GEO = {
+    "primitives": [
+        {"type": "box", "params": {"width": 1.1, "height": 0.22, "depth": 1.1}, "position": [0.0, 0.11, 0.0]},
+        {"type": "cylinder", "params": {"rTop": 0.12, "rBottom": 0.16, "height": 1.05, "segments": 6}, "position": [-0.32, 0.64, -0.28]},
+        {"type": "cylinder", "params": {"rTop": 0.11, "rBottom": 0.15, "height": 0.72, "segments": 6}, "position": [0.34, 0.48, 0.26], "rotation": [12.0, 0.0, 8.0]},
+        {"type": "box", "params": {"width": 0.7, "height": 0.16, "depth": 0.28}, "position": [0.08, 0.86, -0.1], "rotation": [0.0, 18.0, -14.0]},
+        {"type": "box", "params": {"width": 0.22, "height": 0.18, "depth": 0.22}, "position": [0.36, 0.2, -0.34]},
+    ]
+}
+HAY_GEO = {
+    "primitives": [
+        {"type": "sphere", "params": {"radius": 0.42, "widthSegments": 7, "heightSegments": 5}, "position": [0.0, 0.34, 0.0], "scale": [1.15, 0.72, 0.95]},
+        {"type": "sphere", "params": {"radius": 0.28, "widthSegments": 6, "heightSegments": 4}, "position": [0.0, 0.62, 0.0], "scale": [0.9, 0.7, 0.9]},
+        {"type": "cylinder", "params": {"rTop": 0.04, "rBottom": 0.05, "height": 0.55, "segments": 5}, "position": [0.0, 0.42, 0.0], "rotation": [90.0, 20.0, 0.0]},
+        {"type": "cone", "params": {"radius": 0.12, "height": 0.16, "segments": 6}, "position": [0.0, 0.78, 0.0]},
+    ]
+}
 
 PROP_TEMPLATES = {
     "oak": {"kind": "tree", "geometry": OAK_GEO, "defaults": {"bark": [0.32, 0.18, 0.08], "leaf": [0.18, 0.46, 0.10], "leaf_dark": [0.08, 0.26, 0.05], "moss": [0.15, 0.30, 0.08]}},
@@ -203,6 +278,10 @@ PROP_TEMPLATES = {
     "boulder": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.46, 0.44, 0.41], "moss": [0.18, 0.34, 0.10]}},
     "stone": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.50, 0.46, 0.40], "moss": [0.16, 0.30, 0.10]}},
     "flower": {"kind": "flower", "geometry": FLOWER_GEO, "defaults": {"petal": [0.86, 0.36, 0.48], "stem": [0.14, 0.40, 0.10]}},
+    "mushroom": {"kind": "mushroom", "geometry": MUSHROOM_GEO, "defaults": {"cap": [0.72, 0.18, 0.16], "stem": [0.86, 0.78, 0.62]}},
+    "crystal": {"kind": "crystal", "geometry": CRYSTAL_GEO, "defaults": {"crystal": [0.35, 0.72, 0.95], "em": 0.85}},
+    "ruin": {"kind": "ruin", "geometry": RUIN_GEO, "defaults": {"rock": [0.52, 0.48, 0.42], "moss": [0.18, 0.32, 0.12]}},
+    "hay": {"kind": "hay", "geometry": HAY_GEO, "defaults": {"hay": [0.78, 0.62, 0.22]}},
 }
 
 TEMPLATE_ALIASES = {
@@ -211,6 +290,10 @@ TEMPLATE_ALIASES = {
     "bush": "bush", "shrub": "bush",
     "boulder": "boulder", "rock": "boulder", "stone": "stone", "rocks": "boulder",
     "flower": "flower", "flowers": "flower",
+    "mushroom": "mushroom", "mushrooms": "mushroom", "fungus": "mushroom", "гриб": "mushroom",
+    "crystal": "crystal", "crystals": "crystal", "gem": "crystal", "кристалл": "crystal",
+    "ruin": "ruin", "ruins": "ruin", "ruined": "ruin", "руина": "ruin", "руины": "ruin",
+    "hay": "hay", "haystack": "hay", "haybale": "hay", "стог": "hay",
 }
 
 TERRAIN_TEMPLATE_UNIFORMS = {
@@ -232,6 +315,15 @@ def resolve_template_id(name: str, explicit=None) -> str | None:
         if alias in lowered:
             return tid
     return None
+
+
+def _em_value(value) -> float:
+    while isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    try:
+        return max(0.0, min(2.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _rgb01(value, fallback):
@@ -266,7 +358,11 @@ def instantiate_prop(spec: dict) -> dict:
     defaults = tmpl["defaults"]
     params = spec.get("params") if isinstance(spec.get("params"), dict) else {}
     geo_scale = spec.get("size") or spec.get("height") or params.get("size") or 1.0
-    uniforms = {"uTime": {"type": "float", "value": 0}}
+    emission = _em_value(spec.get("em") or spec.get("emission") or params.get("em") or defaults.get("em") or 0)
+    uniforms = {
+        "uTime": {"type": "float", "value": 0},
+        "uEm": {"type": "float", "value": emission},
+    }
     shader = {
         "vertex": STANDARD_VERTEX_SHADER,
         "uniforms": uniforms,
@@ -285,7 +381,7 @@ def instantiate_prop(spec: dict) -> dict:
         shader["fragment"] = BARK_FRAGMENT
         shader["leaf_fragment"] = LEAF_FRAGMENT
         shader["leaf_vertex"] = LEAF_VERTEX
-    elif tmpl["kind"] == "rock":
+    elif tmpl["kind"] == "rock" or tmpl["kind"] == "ruin":
         rock = _rgb01(spec.get("rock") or spec.get("color") or params.get("rock"), defaults["rock"])
         moss = _rgb01(spec.get("moss") or params.get("moss"), defaults["moss"])
         uniforms.update({
@@ -293,6 +389,24 @@ def instantiate_prop(spec: dict) -> dict:
             "uMoss": {"type": "vec3", "value": moss},
         })
         shader["fragment"] = ROCK_FRAGMENT
+    elif tmpl["kind"] == "crystal":
+        crystal = _rgb01(spec.get("crystal") or spec.get("color") or params.get("crystal"), defaults["crystal"])
+        uniforms["uCrystal"] = {"type": "vec3", "value": crystal}
+        shader["fragment"] = CRYSTAL_FRAGMENT
+    elif tmpl["kind"] == "hay":
+        hay = _rgb01(spec.get("hay") or spec.get("color") or params.get("hay"), defaults["hay"])
+        uniforms["uHay"] = {"type": "vec3", "value": hay}
+        shader["fragment"] = HAY_FRAGMENT
+    elif tmpl["kind"] == "mushroom":
+        cap = _rgb01(spec.get("cap") or spec.get("color") or params.get("cap"), defaults["cap"])
+        stem = _rgb01(spec.get("stem") or params.get("stem"), defaults["stem"])
+        uniforms.update({
+            "uCap": {"type": "vec3", "value": cap},
+            "uStem": {"type": "vec3", "value": stem},
+        })
+        shader["fragment"] = FLOWER_STEM
+        shader["leaf_fragment"] = MUSHROOM_CAP
+        shader["leaf_vertex"] = STANDARD_VERTEX_SHADER
     else:
         petal = _rgb01(spec.get("petal") or spec.get("color") or params.get("petal"), defaults["petal"])
         stem = _rgb01(spec.get("stem") or params.get("stem"), defaults["stem"])

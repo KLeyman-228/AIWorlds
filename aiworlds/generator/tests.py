@@ -123,6 +123,17 @@ class TemplateTests(SimpleTestCase):
         self.assertEqual(prop["shader"]["uniforms"]["uLeaf"]["value"][2], 0.9)
         self.assertIn("uBark", prop["shader"]["uniforms"])
 
+    def test_crystal_has_emission(self):
+        prop = instantiate_prop({"name": "glow_crystal", "template": "crystal", "em": 1.2, "count": 4})
+        self.assertEqual(prop["template"], "crystal")
+        self.assertGreater(prop["shader"]["uniforms"]["uEm"]["value"], 0.5)
+
+    def test_new_templates_exist(self):
+        for tid in ("mushroom", "ruin", "hay", "flower"):
+            prop = instantiate_prop({"name": tid, "template": tid, "count": 3})
+            self.assertGreaterEqual(len(prop["geometry"]["primitives"]), 3)
+            self.assertEqual(prop["shader"]["uniforms"]["uEm"]["value"], 0.0)
+
 
 class TerrainFeatureTests(SimpleTestCase):
     def test_river_lowers_center_of_map(self):

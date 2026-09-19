@@ -647,7 +647,7 @@ void main() {
         shader = prop.get('shader') or {}
         vertex = shader.get('vertex', '')
         fragment = shader.get('fragment', '')
-        is_tree = _is_tree_prop(prop_name, geometry)
+        is_tree = _is_tree_prop(prop_name, geometry, prop.get("template"))
         leaf_fragment = (shader.get("leaf_fragment") or "").strip()
         leaf_vertex = (shader.get("leaf_vertex") or "").strip()
         if is_tree:
@@ -741,9 +741,12 @@ def _stabilize_terrain_fragment(src: str) -> str:
     return text
 
 
-def _is_tree_prop(name: str, geometry: dict) -> bool:
+def _is_tree_prop(name: str, geometry: dict, template: str | None = None) -> bool:
     lowered = str(name or "").lower()
-    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow")):
+    tmpl = str(template or "").lower()
+    if tmpl in ("oak", "birch", "pine", "bush", "flower", "mushroom"):
+        return True
+    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow", "bush", "flower", "mushroom")):
         return True
     types = [str(p.get("type") or "") for p in (geometry or {}).get("primitives") or []]
     has_trunk = "cylinder" in types

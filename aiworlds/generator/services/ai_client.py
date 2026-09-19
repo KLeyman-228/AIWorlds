@@ -63,10 +63,10 @@ METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dot
 Ключи: n имя, d описание, t террейн, tm цвета ландшафта, a атмосфера, p пропы, pp постпроцесс.
 t.w вода 0.12-0.22. t.g 6 ретро-ступеней. t.f: rv река, lk озеро.
 tm: grass/dirt/rock 0-1. ts (кастомный fragment ландшафта) пиши ТОЛЬКО если биом нельзя описать tm (лава, снег, кристалл). Иначе tm хватает.
-Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower.
-p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower ИЛИ "x" если нужен кастомный меш/шейдер.
-params для дерева: bark, leaf, size. камень: rock. цветок: petal, stem. Цвета 0-1. size 0.6-1.6.
-Кастом (tpl=x) только если заготовки не хватает (кристалл, мост, руина, синее дерево-не-oak).
+Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower, mushroom, crystal, ruin, hay.
+p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower|mushroom|crystal|ruin|hay ИЛИ "x" если нужен кастомный меш/шейдер.
+params: size 0.6-1.6, em 0-1.5 (свечение, 0 по умолчанию). дерево: bark, leaf. камень/руина: rock. цветок: petal, stem. гриб: cap, stem. кристалл: crystal + em. стог: hay.
+Кастом (tpl=x) только если заготовки не хватает (мост, статуя, уникальный меш). Для свечения не нужен custom — ставь em.
 a.td day, sk голубой. 4-6 пропов count<=14. Не делай проп-поляну.
 JSON компактный, без markdown.
 """
@@ -320,7 +320,7 @@ def _expand_metadata(data: dict) -> dict:
                 entry["template"] = item[4]
             if len(item) > 5 and isinstance(item[5], dict):
                 entry["params"] = item[5]
-                for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss"):
+                for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss", "em", "cap", "crystal", "hay"):
                     if key in item[5]:
                         entry[key] = item[5][key]
             props.append(entry)

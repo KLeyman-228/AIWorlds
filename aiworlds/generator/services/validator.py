@@ -450,6 +450,8 @@ def _validate_shader(shader, is_post: bool = False) -> dict:
     if not isinstance(uniforms, dict):
         uniforms = {}
     uniforms["uTime"] = {"type": "float", "value": 0}
+    if "uEm" not in uniforms:
+        uniforms["uEm"] = {"type": "float", "value": 0}
     if is_post:
         uniforms.setdefault("uResolution", {"type": "vec2", "value": [1024, 768]})
         uniforms.pop("tDiffuse", None)
