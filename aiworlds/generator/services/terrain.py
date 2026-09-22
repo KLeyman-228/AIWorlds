@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 import time
@@ -18,7 +19,50 @@ log = logging.getLogger(__name__)
 
 TERRAIN_SIZE = 20.0
 HEIGHT_SCALE = 4.0
-FEATURE_TYPES = ("river", "lake", "basin", "ridge", "plateau", "mound")
+FEATURE_TYPES = (
+    "river", "lake", "basin", "ridge", "plateau", "mound", "mountain",
+    "canyon", "valley", "crater",
+)
+TERRAIN_STYLES = (
+    "plains", "hills", "mountains", "canyon", "valley", "island", "dunes", "crater",
+)
+
+
+def mix_seed(prompt: str, ai_seed) -> int:
+    """Разные промпты не должны давать один и тот же рельеф, даже если AI шлёт seed=42."""
+    try:
+        base = int(ai_seed)
+    except (TypeError, ValueError):
+        base = 0
+    digest = hashlib.md5((prompt or "").encode("utf-8")).hexdigest()
+    prompt_part = int(digest[:8], 16)
+    return abs(base * 10007 + prompt_part) % 1000003
+
+
+def default_river(seed: int) -> dict:
+    rng = np.random.default_rng(int(seed) + 91)
+    axis = rng.uniform(0.28, 0.72)
+    bend = rng.uniform(0.08, 0.22) * (1.0 if rng.random() < 0.5 else -1.0)
+    if rng.random() < 0.5:
+        pts = [
+            [0.02, float(np.clip(axis - bend, 0.08, 0.92))],
+            [0.32, float(np.clip(axis + bend * 0.4, 0.08, 0.92))],
+            [0.62, float(np.clip(axis + bend, 0.08, 0.92))],
+            [0.98, float(np.clip(axis - bend * 0.3, 0.08, 0.92))],
+        ]
+    else:
+        pts = [
+            [float(np.clip(axis - bend, 0.08, 0.92)), 0.02],
+            [float(np.clip(axis + bend * 0.4, 0.08, 0.92)), 0.35],
+            [float(np.clip(axis + bend, 0.08, 0.92)), 0.68],
+            [float(np.clip(axis - bend * 0.3, 0.08, 0.92)), 0.98],
+        ]
+    return {
+        "type": "river",
+        "points": pts,
+        "width": float(rng.uniform(0.04, 0.07)),
+        "depth": float(rng.uniform(0.32, 0.5)),
+    }
 
 
 def generate_heightmap(
@@ -27,32 +71,48 @@ def generate_heightmap(
     octaves=4,
     seed=42,
     features=None,
+    style="hills",
+    amplitude=1.0,
 ) -> np.ndarray:
-    """Карта высот 0..1: континенты + холмы + детали, затем фичи AI."""
+    """Карта высот 0..1: стиль базы + скульпт-фичи AI. Без растяжки 0-1."""
     octaves = max(1, min(8, int(octaves)))
     seed = int(seed)
+    scale = max(8.0, min(120.0, float(scale)))
+    style = str(style or "hills").lower()
+    if style not in TERRAIN_STYLES:
+        style = "hills"
+    amp = max(0.35, min(1.8, float(amplitude or 1.0)))
     started = time.perf_counter()
 
-    hm = _sculpted_base(size, seed, octaves)
+    hm = _sculpted_base(size, seed, octaves, scale, style, amp)
+    hm = gaussian_filter(hm, sigma=0.7)
     hm = apply_features(hm, features or [])
-    hm = gaussian_filter(hm, sigma=1.35)
-    hm = _normalize(hm)
-    hm = np.clip(np.power(hm, 1.12), 0.0, 1.0)
-    hm = gaussian_filter(hm, sigma=0.65)
-    hm = _normalize(hm)
+    hm = gaussian_filter(hm, sigma=0.4)
+    hm = np.clip(hm, 0.0, 1.0)
 
     log.info(
-        "Heightmap size=%s octaves=%s features=%s time=%.2fs",
+        "Heightmap size=%s scale=%s octaves=%s seed=%s style=%s amp=%s features=%s time=%.2fs",
         size,
+        scale,
         octaves,
-        len(features or []),
+        seed,
+        style,
+        amp,
+        [(f.get("type"), f.get("center") or f.get("points")) for f in (features or []) if isinstance(f, dict)],
         time.perf_counter() - started,
     )
     return hm
 
 
-def _sculpted_base(size: int, seed: int, octaves: int) -> np.ndarray:
-    """Крупные формы карты, а не мелкий шум: долины, хребты, холмы."""
+def _sculpted_base(
+    size: int,
+    seed: int,
+    octaves: int,
+    scale: float = 45.0,
+    style: str = "hills",
+    amplitude: float = 1.0,
+) -> np.ndarray:
+    rng = np.random.default_rng(seed)
     continent = PerlinNoise(octaves=1, seed=seed)
     hills = PerlinNoise(octaves=1, seed=seed + 11)
     detail = PerlinNoise(octaves=1, seed=seed + 23)
@@ -60,29 +120,66 @@ def _sculpted_base(size: int, seed: int, octaves: int) -> np.ndarray:
     warp_y = PerlinNoise(octaves=1, seed=seed + 57)
     ridge_n = PerlinNoise(octaves=1, seed=seed + 73)
 
+    freq = 48.0 / max(scale, 8.0)
+    ou, ov = float(rng.uniform(0, 11)), float(rng.uniform(0, 11))
+    tilt_u = float(rng.uniform(-0.18, 0.18))
+    tilt_v = float(rng.uniform(-0.18, 0.18))
     inv = 1.0 / max(size - 1, 1)
-    mountain = 0.22 + 0.06 * octaves
     hm = np.zeros((size, size), dtype=np.float64)
     for i in range(size):
         v = i * inv
         for j in range(size):
             u = j * inv
-            wx = warp_x([u * 2.1, v * 2.1]) * 0.18
-            wy = warp_y([u * 2.1 + 5.0, v * 2.1]) * 0.18
-            pu, pv = u + wx, v + wy
-
-            land = continent([pu * 1.35, pv * 1.35])
-            hill = hills([pu * 3.8, pv * 3.8])
-            fine = detail([pu * 9.5, pv * 9.5])
-            ridge = 1.0 - abs(ridge_n([pu * 2.6, pv * 2.6]))
-            ridge = ridge * ridge
-
-            h = 0.55 * land + 0.28 * hill + 0.08 * fine + mountain * ridge
+            wx = warp_x([u * 1.7 * freq + ou, v * 1.7 * freq]) * 0.16
+            wy = warp_y([u * 1.7 * freq, v * 1.7 * freq + ov]) * 0.16
+            pu, pv = u + wx + ou * 0.015, v + wy + ov * 0.015
+            land = continent([pu * 1.1 * freq, pv * 1.1 * freq])
+            hill = hills([pu * 3.1 * freq, pv * 3.1 * freq])
+            fine = detail([pu * 8.2 * freq, pv * 8.2 * freq])
+            ridge = 1.0 - abs(ridge_n([pu * 2.4 * freq, pv * 2.4 * freq]))
+            dx, dy = u - 0.5, v - 0.5
+            radial = np.sqrt(dx * dx + dy * dy)
+            h = 0.62 * land + 0.28 * hill + 0.1 * fine
+            if style == "plains":
+                h = 0.22 + 0.12 * land + 0.04 * fine
+            elif style == "hills":
+                h = 0.28 + 0.22 * land + 0.16 * hill + 0.05 * fine
+            elif style == "mountains":
+                h = 0.22 + 0.18 * land + 0.22 * hill + 0.38 * (ridge ** 2)
+            elif style == "canyon":
+                groove = np.exp(-((v - (0.42 + 0.12 * land)) ** 2) / 0.018)
+                h = 0.55 + 0.2 * hill - 0.48 * groove
+            elif style == "valley":
+                groove = np.exp(-((v - 0.5) ** 2) / 0.04)
+                h = 0.22 + 0.38 * (1.0 - groove) + 0.1 * hill
+            elif style == "island":
+                fall = np.clip(1.0 - radial / 0.48, 0.0, 1.0) ** 1.4
+                h = 0.06 + fall * (0.38 + 0.18 * land + 0.1 * hill)
+            elif style == "dunes":
+                wave = np.sin((u * 9.0 + land * 1.8) * 3.1416)
+                h = 0.26 + 0.16 * abs(wave) + 0.08 * hill
+            elif style == "crater":
+                bowl = np.clip(1.0 - abs(radial - 0.22) / 0.16, 0.0, 1.0)
+                h = 0.34 + 0.08 * land + 0.32 * bowl - 0.28 * np.clip(1.0 - radial / 0.16, 0.0, 1.0)
+            h += tilt_u * (u - 0.5) + tilt_v * (v - 0.5)
             edge = min(u, v, 1.0 - u, 1.0 - v)
-            h *= 0.82 + 0.18 * np.clip(edge / 0.12, 0.0, 1.0)
+            if style != "island":
+                h *= 0.9 + 0.1 * np.clip(edge / 0.08, 0.0, 1.0)
             hm[i, j] = h
-
-    return _normalize(hm)
+    n = _normalize(hm)
+    spans = {
+        "plains": 0.20,
+        "hills": 0.36,
+        "mountains": 0.58,
+        "canyon": 0.50,
+        "valley": 0.46,
+        "island": 0.52,
+        "dunes": 0.32,
+        "crater": 0.44,
+    }
+    span = spans.get(style, 0.36) * amplitude
+    base = 0.05 if style == "island" else 0.14
+    return np.clip(n * span + base, 0.0, 1.0)
 
 
 def apply_features(hm: np.ndarray, features: list) -> np.ndarray:
@@ -99,21 +196,21 @@ def apply_features(hm: np.ndarray, features: list) -> np.ndarray:
             log.warning("Unknown terrain feature: %s", kind)
             continue
         try:
-            if kind == "river":
-                hm = _carve_river(hm, uu, vv, feat)
-            elif kind == "lake":
+            if kind in ("river", "canyon", "valley"):
+                hm = _carve_river(hm, uu, vv, feat, wide=(kind != "river"))
+            elif kind in ("lake", "basin"):
                 hm = _carve_radial(hm, uu, vv, feat, bowl=True)
-            elif kind == "basin":
-                hm = _carve_radial(hm, uu, vv, feat, bowl=True)
-            elif kind == "mound":
-                hm = _raise_radial(hm, uu, vv, feat)
+            elif kind == "crater":
+                hm = _carve_crater(hm, uu, vv, feat)
+            elif kind in ("mound", "mountain"):
+                hm = _raise_radial(hm, uu, vv, feat, peaked=(kind == "mountain"))
             elif kind == "plateau":
                 hm = _raise_plateau(hm, uu, vv, feat)
             elif kind == "ridge":
                 hm = _raise_ridge(hm, uu, vv, feat)
         except Exception:
             log.exception("Failed terrain feature %s", kind)
-    return _normalize(hm)
+    return hm
 
 
 def sample_height_uv(hm: np.ndarray, u: float, v: float) -> float:
@@ -230,7 +327,7 @@ def generate_color_map(hm: np.ndarray, gradient: list) -> np.ndarray:
             idx = max(0, min(len(heights) - 2, idx))
             h0, h1 = heights[idx], heights[idx + 1]
             c0, c1 = colors[idx], colors[idx + 1]
-            color_map[i, j] = np.clip(c0 * 1.12, 0, 255).astype(np.uint8)
+            color_map[i, j] = np.clip(c0 * 1.08, 0, 255).astype(np.uint8)
     return color_map
 
 
@@ -284,12 +381,14 @@ def _points(feat, min_count=2):
     return cleaned
 
 
-def _carve_river(hm, uu, vv, feat):
+def _carve_river(hm, uu, vv, feat, wide=False):
     points = _points(feat, 2)
-    width = float(feat.get("width") or 0.045)
-    depth = float(feat.get("depth") or 0.42)
+    width = float(feat.get("width") or (0.1 if wide else 0.045))
+    depth = float(feat.get("depth") or (0.55 if wide else 0.42))
     dist = _polyline_distance(uu, vv, points)
     influence = _smooth_falloff(dist, max(width, 1e-4))
+    if wide:
+        influence = np.sqrt(np.clip(influence, 0.0, 1.0))
     return hm - influence * depth
 
 
@@ -304,13 +403,31 @@ def _carve_radial(hm, uu, vv, feat, bowl=True):
     return hm - influence * depth
 
 
-def _raise_radial(hm, uu, vv, feat):
+def _raise_radial(hm, uu, vv, feat, peaked=False):
     cx, cy = _center(feat)
-    radius = float(feat.get("radius") or 0.1)
-    height = float(feat.get("height") or 0.28)
-    dist = np.sqrt((uu - cx) ** 2 + (vv - cy) ** 2)
+    radius = float(feat.get("radius") or (0.18 if peaked else 0.12))
+    height = float(feat.get("height") or (0.72 if peaked else 0.38))
+    aspect = max(0.4, min(2.5, float(feat.get("aspect") or 1.0)))
+    rot = np.deg2rad(float(feat.get("rot") or 0.0))
+    du, dv = uu - cx, vv - cy
+    ru = du * np.cos(rot) + dv * np.sin(rot)
+    rv = -du * np.sin(rot) + dv * np.cos(rot)
+    dist = np.sqrt((ru * aspect) ** 2 + (rv / aspect) ** 2)
     influence = _smooth_falloff(dist, max(radius, 1e-4))
+    if peaked:
+        influence = np.power(np.clip(influence, 0.0, 1.0), 1.65)
     return hm + influence * height
+
+
+def _carve_crater(hm, uu, vv, feat):
+    cx, cy = _center(feat)
+    radius = float(feat.get("radius") or 0.16)
+    depth = float(feat.get("depth") or 0.45)
+    rim = float(feat.get("height") or 0.28)
+    dist = np.sqrt((uu - cx) ** 2 + (vv - cy) ** 2)
+    bowl = _smooth_falloff(dist, max(radius * 0.72, 1e-4))
+    ring = _smooth_falloff(np.abs(dist - radius * 0.78), max(radius * 0.28, 1e-4))
+    return hm - bowl * depth + ring * rim
 
 
 def _raise_plateau(hm, uu, vv, feat):

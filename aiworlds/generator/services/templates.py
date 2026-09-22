@@ -15,17 +15,45 @@ void main() {
   vNormal = normalize(normalMatrix * normal);
   vec3 p = position;
   float k = clamp(position.y * 0.45, 0.0, 1.0);
-  p.x += sin(uTime * 1.5 + position.y * 3.0 + position.x * 2.0) * 0.05 * k;
-  p.z += cos(uTime * 1.2 + position.x * 2.4 + position.z) * 0.04 * k;
+  p.x += sin(uTime * 1.4 + position.y * 2.6 + position.x) * 0.04 * k;
+  p.z += cos(uTime * 1.1 + position.x * 2.1) * 0.03 * k;
   vPosition = p;
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vWorldPos = wp.xyz;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }"""
 
+PIXEL_GLSL = """
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+}
+float fbm(vec2 p){ return noise(p)*0.57 + noise(p*2.13)*0.28 + noise(p*4.27)*0.15; }
+vec3 shadeLit(vec3 albedo, vec3 n, vec3 wp){
+  vec3 L = normalize(vec3(0.46, 0.84, 0.26));
+  float ndl = max(dot(normalize(n), L), 0.0);
+  float wrap = ndl * 0.62 + 0.38;
+  float band = floor(wrap * 5.0 + 0.35) / 5.0;
+  float lit = mix(wrap, band, 0.55);
+  vec3 warm = vec3(1.06, 0.97, 0.84);
+  vec3 cool = vec3(0.58, 0.68, 0.88);
+  vec3 light = mix(cool, warm, lit);
+  float hemi = 0.82 + 0.18 * clamp(n.y, 0.0, 1.0);
+  float rim = (1.0 - clamp(n.y, 0.0, 1.0)) * 0.1;
+  vec3 c = albedo * light * hemi + albedo * rim * warm;
+  float grain = (hash(floor(wp.xz * 18.0)) - 0.5) * 0.035;
+  c += vec3(grain, grain * 0.9, grain * 0.7);
+  c = max(c, vec3(0.06));
+  c = floor(c * 20.0 + 0.5) / 20.0;
+  return c;
+}
+"""
+
 EMISSION_TAIL = """
-  c += c * uEm * (0.55 + 0.45 * sin(uTime * 2.6 + vPosition.y * 5.0));
-  c = floor(c * 8.0 + 0.5) / 8.0;
+  c = shadeLit(albedo, vNormal, vPosition);
+  c += albedo * uEm * (0.85 + 0.35 * (0.5 + 0.5 * sin(uTime * 2.2 + vPosition.y * 3.5)));
+  c = min(c, vec3(1.35));
   gl_FragColor = vec4(c, 1.0);
 }"""
 
@@ -35,24 +63,17 @@ varying vec3 vPosition;
 uniform vec3 uBark;
 uniform vec3 uMoss;
 uniform float uEm;
-uniform float uTime;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float n2(vec2 p){
-  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
-  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
-}
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
   float ang = atan(vPosition.x, vPosition.z);
-  float ridge = n2(vec2(ang * 6.0, vPosition.y * 1.2));
-  float groove = step(0.72, n2(vec2(ang * 9.0, vPosition.y * 0.7)));
-  float flake = n2(vec2(ang * 14.0, vPosition.y * 8.0));
-  vec3 c = mix(uBark * 0.72, uBark * 1.15, flake);
-  c *= 0.82 + 0.28 * ridge;
-  c = mix(c, uBark * 0.45, groove * 0.7);
-  float moss = (1.0 - clamp(vPosition.y * 0.7, 0.0, 1.0)) * step(0.5, n2(vPosition.xz * 8.0));
-  c = mix(c, uMoss, moss * 0.65);
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);""" + EMISSION_TAIL
+  vec2 g = vec2(ang * 2.4, vPosition.y * 3.2);
+  float ridge = abs(fract(vPosition.y * 6.5 + noise(g) * 0.4) - 0.5);
+  float flake = fbm(g * 3.1);
+  vec3 albedo = mix(uBark * 0.72, uBark * 1.18, flake);
+  albedo = mix(albedo, uBark * 0.48, step(0.18, ridge) * 0.55);
+  float moss = (1.0 - clamp(vPosition.y * 0.55, 0.0, 1.0)) * smoothstep(0.42, 0.7, fbm(vPosition.xz * 4.0));
+  albedo = mix(albedo, uMoss, moss * 0.7);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 LEAF_FRAGMENT = """varying vec2 vUv;
 varying vec3 vNormal;
@@ -60,111 +81,111 @@ varying vec3 vPosition;
 uniform vec3 uLeaf;
 uniform vec3 uLeafDark;
 uniform float uEm;
-uniform float uTime;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-float n2(vec2 p){
-  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
-  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
-}
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
-  vec2 uv = vUv * 12.0 + vPosition.xz * 2.0;
-  float clump = n2(uv) * 0.5 + n2(uv * 2.4 + 7.1) * 0.32 + n2(uv * 5.0) * 0.18;
-  vec3 lite = uLeaf * 1.25;
-  vec3 c = mix(uLeafDark, uLeaf, step(0.42, clump));
-  c = mix(c, lite, step(0.72, clump));
-  c = mix(c, uLeafDark * 0.45, step(0.82, n2(uv * 3.3)));
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+  float clump = fbm(vPosition.xz * 2.8 + vUv * 5.0);
+  float speck = noise(vPosition.xz * 9.0);
+  vec3 lite = uLeaf * 1.22;
+  vec3 albedo = mix(uLeafDark, uLeaf, smoothstep(0.28, 0.62, clump));
+  albedo = mix(albedo, lite, smoothstep(0.62, 0.88, clump) * (0.55 + 0.45 * clamp(vNormal.y, 0.0, 1.0)));
+  albedo = mix(albedo, uLeafDark * 0.55, step(0.84, speck) * 0.45);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 ROCK_FRAGMENT = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uRock;
 uniform vec3 uMoss;
 uniform float uEm;
-uniform float uTime;
-float hash(vec3 p){ return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
-float n3(vec3 p){
-  vec3 i = floor(p); vec3 f = fract(p); f = f*f*(3.0-2.0*f);
-  return mix(hash(i), hash(i + vec3(1.0, 1.0, 1.0)), (f.x+f.y+f.z)/3.0);
-}
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
-  vec3 c = uRock + (n3(vPosition * 16.0) - 0.5) * 0.12;
-  float crack = 1.0 - smoothstep(0.0, 0.07, abs(n3(vPosition * 5.0) - 0.5));
-  c = mix(c, uRock * 0.4, crack * 0.7);
-  float moss = step(0.55, n.y) * step(0.45, n3(vPosition * 8.0));
-  c = mix(c, uMoss, moss * 0.55);
-  c *= 0.5 + 0.5 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);""" + EMISSION_TAIL
+  float grain = fbm(vPosition.xy * 3.4 + vPosition.z * 2.2);
+  float crack = 1.0 - smoothstep(0.0, 0.08, abs(noise(vPosition.xz * 4.5) - 0.5));
+  vec3 albedo = mix(uRock * 0.78, uRock * 1.16, grain);
+  albedo = mix(albedo, uRock * 0.42, crack * 0.55);
+  float moss = smoothstep(0.35, 0.85, vNormal.y) * smoothstep(0.4, 0.75, fbm(vPosition.xz * 3.0));
+  albedo = mix(albedo, uMoss, moss * 0.5);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 FLOWER_STEM = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uStem;
 uniform float uEm;
-uniform float uTime;
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  float n = fract(sin(dot(floor(vPosition.xy * 18.0), vec2(12.9, 78.2))) * 43758.5);
-  vec3 c = mix(uStem * 0.7, uStem, step(0.5, n));
-  c *= 0.6 + 0.4 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+  float n = noise(vPosition.xy * 10.0);
+  vec3 albedo = mix(uStem * 0.7, uStem * 1.15, n);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 FLOWER_PETAL = """varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uPetal;
 uniform float uEm;
-uniform float uTime;
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  float r = length(vUv - vec2(0.5)) * 2.0;
-  float n = fract(sin(dot(floor(vUv * 16.0), vec2(26.7, 91.3))) * 24634.6);
-  vec3 core = vec3(0.95, 0.78, 0.18);
-  vec3 c = mix(core, uPetal, step(0.28, r));
-  c = mix(c, uPetal * 1.2, step(0.65, n) * 0.4);
-  c *= 0.7 + 0.3 * max(dot(normalize(vNormal), normalize(vec3(0.4, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+  float r = length(vUv - 0.5) * 2.0;
+  vec3 core = vec3(0.98, 0.84, 0.22);
+  vec3 albedo = mix(core, uPetal, smoothstep(0.18, 0.42, r));
+  albedo = mix(albedo, uPetal * 1.18, noise(vUv * 8.0) * 0.35);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 CRYSTAL_FRAGMENT = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uCrystal;
 uniform float uEm;
-uniform float uTime;
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
-  float bands = abs(fract(vPosition.y * 6.0 + vPosition.x * 3.0) - 0.5);
-  vec3 c = mix(uCrystal * 0.55, uCrystal * 1.35, smoothstep(0.05, 0.28, bands));
-  float edge = pow(1.0 - abs(n.y), 2.0);
-  c += uCrystal * edge * 0.25;
-  c *= 0.7 + 0.3 * max(dot(n, normalize(vec3(0.3, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+  float band = abs(fract(vPosition.y * 4.5 + vPosition.x * 2.2) - 0.5);
+  vec3 albedo = mix(uCrystal * 0.62, uCrystal * 1.28, smoothstep(0.04, 0.28, band));
+  float edge = pow(1.0 - abs(normalize(vNormal).y), 1.6);
+  albedo += uCrystal * edge * 0.22;
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 HAY_FRAGMENT = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uHay;
 uniform float uEm;
-uniform float uTime;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9, 78.2))) * 43758.5); }
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
-  float straw = step(0.45, fract(vPosition.y * 18.0 + vPosition.x * 9.0));
-  vec3 c = mix(uHay * 0.7, uHay * 1.15, straw);
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
-  c += vec3(0.04, 0.03, 0.01) * hash(floor(vPosition.xz * 12.0));""" + EMISSION_TAIL
+  float straw = fract(vPosition.y * 14.0 + vPosition.x * 6.0 + noise(vPosition.xz * 4.0));
+  vec3 albedo = mix(uHay * 0.72, uHay * 1.18, step(0.45, straw));
+  vec3 c = albedo;""" + EMISSION_TAIL
+
+HOUSE_FRAGMENT = """varying vec3 vNormal;
+varying vec3 vPosition;
+uniform vec3 uWood;
+uniform vec3 uRoof;
+uniform float uEm;
+uniform float uTime;""" + PIXEL_GLSL + """
+void main() {
+  float plank = step(0.5, fract(vPosition.y * 7.0 + noise(vPosition.xz * 2.0) * 0.2));
+  vec3 wood = mix(uWood * 0.74, uWood * 1.12, plank);
+  float is_roof = step(1.05, vPosition.y);
+  float tile = step(0.5, fract(vPosition.x * 5.0 + vPosition.z * 0.4));
+  vec3 roof = mix(uRoof * 0.7, uRoof * 1.16, tile);
+  vec3 albedo = mix(wood, roof, is_roof);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
 MUSHROOM_CAP = """varying vec3 vNormal;
 varying vec3 vPosition;
 uniform vec3 uCap;
 uniform float uEm;
-uniform float uTime;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5); }
+uniform float uTime;""" + PIXEL_GLSL + """
 void main() {
-  vec3 n = normalize(vNormal);
-  float spots = step(0.78, hash(floor(vPosition.xz * 9.0 + vPosition.y * 4.0)));
-  vec3 c = mix(uCap, vec3(0.92, 0.88, 0.78), spots * 0.85);
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);""" + EMISSION_TAIL
+  float spots = step(0.74, noise(vPosition.xz * 6.5 + vPosition.y * 2.0));
+  vec3 albedo = mix(uCap, vec3(0.96, 0.9, 0.72), spots * 0.9);
+  vec3 c = albedo;""" + EMISSION_TAIL
 
-TERRAIN_FRAGMENT = """varying vec3 vNormal;
+TERRAIN_FRAGMENT = """varying vec2 vUv;
+varying vec3 vNormal;
 varying vec3 vWorldPos;
+uniform sampler2D uMap;
 uniform vec3 uGrass;
 uniform vec3 uDirt;
 uniform vec3 uRock;
+uniform vec3 uSnow;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float n2(vec2 p){
+float noise(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
 }
@@ -172,21 +193,24 @@ void main() {
   vec3 n = normalize(vNormal);
   float h = clamp(vWorldPos.y / 4.0, 0.0, 1.0);
   float slope = 1.0 - clamp(n.y, 0.0, 1.0);
-  float patches = n2(vWorldPos.xz * 2.4);
-  float tufts = n2(vWorldPos.xz * 9.0);
-  float blades = step(0.52, n2(vWorldPos.xz * 28.0));
-  vec3 sand = mix(uDirt, vec3(0.55, 0.46, 0.24), 0.45);
-  vec3 grassB = uGrass * 1.25;
-  vec3 dry = mix(uGrass, uDirt, 0.45);
-  vec3 c = mix(uDirt, sand, step(0.12, h));
-  c = mix(c, mix(uGrass, grassB, step(0.5, patches)), step(0.22, h));
-  c = mix(c, dry, step(0.62, h));
-  c = mix(c, uRock, step(0.82, h));
-  c = mix(c, uGrass * 0.75, blades * (1.0 - step(0.7, h)) * 0.45);
-  c = mix(c, uDirt, step(0.62, tufts) * 0.2);
-  c = mix(c, uRock, smoothstep(0.25, 0.55, slope));
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
-  c = floor(c * 8.0 + 0.5) / 8.0;
+  float n1 = noise(vWorldPos.xz * 1.7);
+  float n2 = noise(vWorldPos.xz * 6.4);
+  float n3 = noise(vWorldPos.xz * 14.0);
+  vec3 pal = texture2D(uMap, vUv).rgb;
+  vec3 grass = mix(uGrass * 0.82, uGrass * 1.22, n1);
+  grass = mix(grass, uGrass * 1.35, step(0.72, n2) * 0.35);
+  vec3 dirt = mix(uDirt * 0.88, uDirt * 1.12, n2);
+  vec3 c = mix(dirt, grass, smoothstep(0.06, 0.26, h));
+  c = mix(c, pal, 0.32);
+  c = mix(c, mix(uGrass, uDirt, 0.45), smoothstep(0.52, 0.76, h) * (1.0 - slope));
+  c = mix(c, uRock * (0.85 + 0.2 * n3), smoothstep(0.22, 0.58, slope));
+  c = mix(c, uSnow, smoothstep(0.78, 0.94, h) * (1.0 - slope * 0.5));
+  float wrap = max(dot(n, normalize(vec3(0.45, 0.85, 0.25))), 0.0) * 0.55 + 0.48;
+  float band = floor(wrap * 5.0 + 0.3) / 5.0;
+  c *= mix(vec3(0.64, 0.72, 0.88), vec3(1.06, 0.98, 0.86), mix(wrap, band, 0.5));
+  c += (hash(floor(vWorldPos.xz * 16.0)) - 0.5) * 0.035;
+  c = max(c, vec3(0.07, 0.09, 0.05));
+  c = floor(c * 20.0 + 0.5) / 20.0;
   gl_FragColor = vec4(c, 1.0);
 }"""
 
@@ -206,6 +230,24 @@ BIRCH_GEO = {
         {"type": "sphere", "params": {"radius": 0.55, "widthSegments": 7, "heightSegments": 5}, "position": [0.0, 2.1, 0.0]},
         {"type": "sphere", "params": {"radius": 0.4, "widthSegments": 6, "heightSegments": 4}, "position": [0.32, 1.8, 0.15]},
         {"type": "sphere", "params": {"radius": 0.36, "widthSegments": 6, "heightSegments": 4}, "position": [-0.22, 1.85, -0.12]},
+    ]
+}
+PINE_GEO = {
+    "primitives": [
+        {"type": "cylinder", "params": {"rTop": 0.07, "rBottom": 0.13, "height": 2.05, "segments": 6}, "position": [0.0, 1.025, 0.0]},
+        {"type": "cone", "params": {"radius": 0.72, "height": 0.85, "segments": 7}, "position": [0.0, 1.15, 0.0]},
+        {"type": "cone", "params": {"radius": 0.56, "height": 0.78, "segments": 7}, "position": [0.0, 1.62, 0.0]},
+        {"type": "cone", "params": {"radius": 0.40, "height": 0.72, "segments": 6}, "position": [0.0, 2.08, 0.0]},
+        {"type": "cone", "params": {"radius": 0.24, "height": 0.55, "segments": 6}, "position": [0.0, 2.48, 0.0]},
+    ]
+}
+FIR_GEO = {
+    "primitives": [
+        {"type": "cylinder", "params": {"rTop": 0.06, "rBottom": 0.11, "height": 1.7, "segments": 6}, "position": [0.0, 0.85, 0.0]},
+        {"type": "cone", "params": {"radius": 0.62, "height": 0.7, "segments": 7}, "position": [0.0, 1.05, 0.0]},
+        {"type": "cone", "params": {"radius": 0.48, "height": 0.68, "segments": 7}, "position": [0.0, 1.48, 0.0]},
+        {"type": "cone", "params": {"radius": 0.32, "height": 0.62, "segments": 6}, "position": [0.0, 1.92, 0.0]},
+        {"type": "cone", "params": {"radius": 0.18, "height": 0.48, "segments": 6}, "position": [0.0, 2.28, 0.0]},
     ]
 }
 BUSH_GEO = {
@@ -280,23 +322,26 @@ CACTUS_GEO = {
 }
 
 PROP_TEMPLATES = {
-    "oak": {"kind": "tree", "geometry": OAK_GEO, "defaults": {"bark": [0.32, 0.18, 0.08], "leaf": [0.18, 0.46, 0.10], "leaf_dark": [0.08, 0.26, 0.05], "moss": [0.15, 0.30, 0.08]}},
-    "birch": {"kind": "tree", "geometry": BIRCH_GEO, "defaults": {"bark": [0.86, 0.82, 0.74], "leaf": [0.22, 0.48, 0.12], "leaf_dark": [0.08, 0.22, 0.05], "moss": [0.18, 0.32, 0.10]}},
-    "pine": {"kind": "tree", "geometry": OAK_GEO, "defaults": {"bark": [0.28, 0.18, 0.10], "leaf": [0.10, 0.32, 0.12], "leaf_dark": [0.05, 0.18, 0.07], "moss": [0.12, 0.24, 0.08]}},
-    "bush": {"kind": "tree", "geometry": BUSH_GEO, "defaults": {"bark": [0.30, 0.19, 0.09], "leaf": [0.16, 0.44, 0.10], "leaf_dark": [0.07, 0.22, 0.05], "moss": [0.14, 0.28, 0.07]}},
-    "boulder": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.46, 0.44, 0.41], "moss": [0.18, 0.34, 0.10]}},
-    "stone": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.50, 0.46, 0.40], "moss": [0.16, 0.30, 0.10]}},
-    "flower": {"kind": "flower", "geometry": FLOWER_GEO, "defaults": {"petal": [0.86, 0.36, 0.48], "stem": [0.14, 0.40, 0.10]}},
-    "mushroom": {"kind": "mushroom", "geometry": MUSHROOM_GEO, "defaults": {"cap": [0.72, 0.18, 0.16], "stem": [0.86, 0.78, 0.62]}},
-    "crystal": {"kind": "crystal", "geometry": CRYSTAL_GEO, "defaults": {"crystal": [0.35, 0.72, 0.95], "em": 0.85}},
-    "ruin": {"kind": "ruin", "geometry": RUIN_GEO, "defaults": {"rock": [0.52, 0.48, 0.42], "moss": [0.18, 0.32, 0.12]}},
-    "hay": {"kind": "hay", "geometry": HAY_GEO, "defaults": {"hay": [0.78, 0.62, 0.22]}},
-    "cactus": {"kind": "tree", "geometry": CACTUS_GEO, "defaults": {"bark": [0.18, 0.42, 0.18], "leaf": [0.22, 0.52, 0.16], "leaf_dark": [0.10, 0.28, 0.10], "moss": [0.16, 0.36, 0.12]}},
+    "oak": {"kind": "tree", "geometry": OAK_GEO, "defaults": {"bark": [0.38, 0.22, 0.10], "leaf": [0.22, 0.54, 0.14], "leaf_dark": [0.10, 0.32, 0.07], "moss": [0.18, 0.38, 0.10]}},
+    "birch": {"kind": "tree", "geometry": BIRCH_GEO, "defaults": {"bark": [0.88, 0.84, 0.76], "leaf": [0.30, 0.60, 0.16], "leaf_dark": [0.12, 0.32, 0.07], "moss": [0.20, 0.38, 0.12]}},
+    "pine": {"kind": "tree", "geometry": PINE_GEO, "defaults": {"bark": [0.34, 0.20, 0.10], "leaf": [0.12, 0.40, 0.18], "leaf_dark": [0.05, 0.22, 0.09], "moss": [0.14, 0.30, 0.10]}},
+    "fir": {"kind": "tree", "geometry": FIR_GEO, "defaults": {"bark": [0.30, 0.16, 0.08], "leaf": [0.10, 0.36, 0.16], "leaf_dark": [0.04, 0.18, 0.08], "moss": [0.12, 0.26, 0.10]}},
+    "bush": {"kind": "tree", "geometry": BUSH_GEO, "defaults": {"bark": [0.36, 0.20, 0.10], "leaf": [0.20, 0.52, 0.14], "leaf_dark": [0.08, 0.28, 0.07], "moss": [0.16, 0.34, 0.10]}},
+    "boulder": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.52, 0.48, 0.44], "moss": [0.20, 0.38, 0.12]}},
+    "stone": {"kind": "rock", "geometry": BOULDER_GEO, "defaults": {"rock": [0.56, 0.50, 0.42], "moss": [0.18, 0.34, 0.12]}},
+    "flower": {"kind": "flower", "geometry": FLOWER_GEO, "defaults": {"petal": [0.90, 0.38, 0.50], "stem": [0.18, 0.48, 0.12]}},
+    "mushroom": {"kind": "mushroom", "geometry": MUSHROOM_GEO, "defaults": {"cap": [0.82, 0.18, 0.16], "stem": [0.90, 0.82, 0.66]}},
+    "crystal": {"kind": "crystal", "geometry": CRYSTAL_GEO, "defaults": {"crystal": [0.38, 0.72, 0.96], "em": 0.85}},
+    "ruin": {"kind": "ruin", "geometry": RUIN_GEO, "defaults": {"rock": [0.58, 0.52, 0.44], "moss": [0.20, 0.38, 0.14]}},
+    "hay": {"kind": "hay", "geometry": HAY_GEO, "defaults": {"hay": [0.86, 0.68, 0.22]}},
+    "cactus": {"kind": "tree", "geometry": CACTUS_GEO, "defaults": {"bark": [0.20, 0.50, 0.18], "leaf": [0.26, 0.62, 0.18], "leaf_dark": [0.10, 0.34, 0.10], "moss": [0.18, 0.42, 0.14]}},
 }
 
 TEMPLATE_ALIASES = {
     "oak": "oak", "tree": "oak", "trees": "oak",
-    "birch": "birch", "pine": "pine", "fir": "pine", "spruce": "pine",
+    "birch": "birch",
+    "pine": "pine", "ёлка": "pine", "елка": "pine", "ель": "fir",
+    "fir": "fir", "spruce": "fir", "christmas": "fir",
     "bush": "bush", "shrub": "bush",
     "boulder": "boulder", "rock": "boulder", "stone": "stone", "rocks": "boulder",
     "flower": "flower", "flowers": "flower",
@@ -308,24 +353,30 @@ TEMPLATE_ALIASES = {
 }
 
 TERRAIN_TEMPLATE_UNIFORMS = {
-    "uGrass": {"type": "vec3", "value": [0.18, 0.46, 0.12]},
-    "uDirt": {"type": "vec3", "value": [0.28, 0.20, 0.10]},
-    "uRock": {"type": "vec3", "value": [0.40, 0.38, 0.34]},
+    "uGrass": {"type": "vec3", "value": [0.22, 0.52, 0.16]},
+    "uDirt": {"type": "vec3", "value": [0.42, 0.28, 0.12]},
+    "uRock": {"type": "vec3", "value": [0.52, 0.48, 0.42]},
+    "uSnow": {"type": "vec3", "value": [0.90, 0.92, 0.94]},
     "uTime": {"type": "float", "value": 0},
 }
 
 
-def resolve_template_id(name: str, explicit=None) -> str | None:
-    if explicit:
-        key = str(explicit).lower().strip()
-        if key in PROP_TEMPLATES:
-            return key
-        return TEMPLATE_ALIASES.get(key)
-    lowered = str(name or "").lower()
-    for alias, tid in TEMPLATE_ALIASES.items():
-        if alias in lowered:
+def _match_template(text: str) -> str | None:
+    key = str(text or "").lower().strip()
+    if not key:
+        return None
+    if key in PROP_TEMPLATES:
+        return key
+    if key in TEMPLATE_ALIASES:
+        return TEMPLATE_ALIASES[key]
+    for alias, tid in sorted(TEMPLATE_ALIASES.items(), key=lambda item: -len(item[0])):
+        if alias in key:
             return tid
     return None
+
+
+def resolve_template_id(name: str, explicit=None) -> str | None:
+    return _match_template(explicit) or _match_template(name)
 
 
 def _em_value(value) -> float:
@@ -346,9 +397,31 @@ def _rgb01(value, fallback):
     return [max(0.0, min(1.0, n)) for n in nums]
 
 
+def _parse_size(value, default=1.0) -> float:
+    while isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    try:
+        return max(0.25, min(8.0, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _scale_range_for_size(size: float, explicit=None) -> list[float]:
+    if isinstance(explicit, (list, tuple)) and len(explicit) >= 2:
+        try:
+            lo, hi = float(explicit[0]), float(explicit[1])
+            if hi < lo:
+                lo, hi = hi, lo
+            return [max(0.2, min(8.0, lo)), max(0.2, min(8.0, hi))]
+        except (TypeError, ValueError):
+            pass
+    s = _parse_size(size, 1.0)
+    return [max(0.2, s * 0.88), min(8.0, s * 1.12)]
+
+
 def _scale_geometry(geometry: dict, scale: float) -> dict:
     geo = deepcopy(geometry)
-    s = max(0.4, min(2.2, float(scale or 1.0)))
+    s = _parse_size(scale, 1.0)
     if abs(s - 1.0) < 0.02:
         return geo
     for prim in geo.get("primitives") or []:
@@ -368,7 +441,7 @@ def instantiate_prop(spec: dict) -> dict:
     tmpl = PROP_TEMPLATES[tid]
     defaults = tmpl["defaults"]
     params = spec.get("params") if isinstance(spec.get("params"), dict) else {}
-    geo_scale = spec.get("size") or spec.get("height") or params.get("size") or 1.0
+    geo_scale = _parse_size(spec.get("size") or params.get("size") or 1.0)
     emission = _em_value(spec.get("em") or spec.get("emission") or params.get("em") or defaults.get("em") or 0)
     uniforms = {
         "uTime": {"type": "float", "value": 0},
@@ -432,14 +505,18 @@ def instantiate_prop(spec: dict) -> dict:
     instances = spec.get("instances")
     if not isinstance(instances, dict):
         instances = {
-            "count": int(spec.get("count") or 8),
+            "count": int(spec.get("count") or 18),
             "distribution": spec.get("distribution") or "scattered",
-            "scale_range": spec.get("scale_range") or [0.8, 1.2],
+            "scale_range": _scale_range_for_size(geo_scale, spec.get("scale_range") or params.get("scale_range")),
         }
+    elif "scale_range" not in instances:
+        instances = dict(instances)
+        instances["scale_range"] = _scale_range_for_size(geo_scale, spec.get("scale_range"))
     return {
         "name": spec.get("name") or tid,
         "template": tid,
-        "geometry": _scale_geometry(tmpl["geometry"], geo_scale),
+        "size": geo_scale,
+        "geometry": deepcopy(tmpl["geometry"]),
         "shader": shader,
         "instances": instances,
         "category": spec.get("category"),
@@ -447,14 +524,13 @@ def instantiate_prop(spec: dict) -> dict:
 
 
 def instantiate_terrain_shader(params=None) -> dict:
-    p = params if isinstance(params, dict) else {}
+    p = dict(params) if isinstance(params, dict) else {}
     uniforms = deepcopy(TERRAIN_TEMPLATE_UNIFORMS)
-    if p.get("grass"):
-        uniforms["uGrass"]["value"] = _rgb01(p.get("grass"), uniforms["uGrass"]["value"])
-    if p.get("dirt"):
-        uniforms["uDirt"]["value"] = _rgb01(p.get("dirt"), uniforms["uDirt"]["value"])
-    if p.get("rock"):
-        uniforms["uRock"]["value"] = _rgb01(p.get("rock"), uniforms["uRock"]["value"])
+    for src, dst in (("grass", "uGrass"), ("dirt", "uDirt"), ("rock", "uRock"), ("snow", "uSnow")):
+        if p.get(src):
+            uniforms[dst]["value"] = _rgb01(p.get(src), uniforms[dst]["value"])
+    if p.get("sand") and not p.get("dirt"):
+        uniforms["uDirt"]["value"] = _rgb01(p.get("sand"), uniforms["uDirt"]["value"])
     return {
         "vertex": STANDARD_VERTEX_SHADER,
         "fragment": TERRAIN_FRAGMENT,
@@ -462,10 +538,56 @@ def instantiate_terrain_shader(params=None) -> dict:
     }
 
 
+BUILDING_WORDS = (
+    "house", "home", "hut", "cabin", "cottage", "barn", "mill", "tower",
+    "shack", "shed", "temple", "church", "windmill", "дом", "домик", "хижина",
+    "изба", "башня", "мельница", "сарай",
+)
+
+
+PROMPT_TINTS = (
+    (("син", "голуб", "blue", "azure", "cyan"), [0.18, 0.42, 0.95], [0.08, 0.18, 0.48]),
+    (("красн", "алы", "red", "crimson"), [0.92, 0.18, 0.14], [0.42, 0.08, 0.06]),
+    (("золот", "жёлт", "желт", "gold", "yellow"), [0.95, 0.78, 0.18], [0.48, 0.32, 0.06]),
+    (("фиолет", "lilac", "purple", "violet"), [0.62, 0.28, 0.92], [0.28, 0.10, 0.42]),
+    (("бел", "white", "snow"), [0.92, 0.95, 0.98], [0.55, 0.62, 0.72]),
+    (("чёрн", "черн", "black", "dark"), [0.12, 0.12, 0.14], [0.05, 0.05, 0.06]),
+)
+
+
+def tint_spec_from_prompt(spec: dict, prompt: str) -> dict:
+    out = dict(spec or {})
+    params = dict(out.get("params") or {}) if isinstance(out.get("params"), dict) else {}
+    text = f"{prompt or ''} {out.get('name') or ''} {out.get('template') or ''}".lower()
+    for words, leaf, dark in PROMPT_TINTS:
+        if any(word in text for word in words):
+            out["leaf"] = leaf
+            out["leaf_dark"] = dark
+            params["leaf"] = leaf
+            params["leaf_dark"] = dark
+            if "petal" not in out:
+                out["petal"] = leaf
+                params["petal"] = leaf
+            if "crystal" not in out:
+                out["crystal"] = leaf
+                params["crystal"] = leaf
+            break
+    if any(word in text for word in ("свеч", "glow", "emiss", "магич", "glowing", "neon", "сия")):
+        em = max(_em_value(out.get("em") or params.get("em") or 0), 0.85)
+        out["em"] = em
+        params["em"] = em
+    if params:
+        out["params"] = params
+    return out
+
+
 def wants_custom(spec: dict) -> bool:
     flag = spec.get("custom") or spec.get("mode") or spec.get("kind")
     tpl = str(spec.get("template") or spec.get("tpl") or "").lower()
+    name = str(spec.get("name") or "").lower()
     if str(flag).lower() in ("custom", "gen", "1", "true", "yes") or tpl in ("x", "custom", "gen"):
+        return True
+    if any(word in name for word in BUILDING_WORDS):
         return True
     if resolve_template_id(spec.get("name"), spec.get("template") or spec.get("tpl")):
         return False

@@ -71,6 +71,13 @@ def _validate_terrain(terrain) -> dict:
     except (TypeError, ValueError):
         raise PlanValidationError("terrain.seed должен быть целым") from None
 
+    from .terrain import TERRAIN_STYLES
+    from .ai_client import STYLE_ALIAS
+
+    style = STYLE_ALIAS.get(str(terrain.get("style") or "hills").lower(), "hills")
+    terrain["style"] = style if style in TERRAIN_STYLES else "hills"
+    terrain["amplitude"] = _clamped(terrain.get("amplitude"), 0.45, 1.8, 1.0)
+
     terrain["color_gradient"] = _clean_gradient(
         terrain.get("color_gradient"),
         terrain.get("material"),
@@ -128,14 +135,16 @@ def _parse_gradient_point(point):
 
 def _gradient_from_material(material) -> list:
     mat = material if isinstance(material, dict) else {}
-    dirt = _rgb01_to_255(mat.get("dirt"), [120, 90, 50])
-    grass = _rgb01_to_255(mat.get("grass"), [70, 140, 50])
-    rock = _rgb01_to_255(mat.get("rock"), [130, 120, 110])
+    dirt = _rgb01_to_255(mat.get("dirt") or mat.get("sand") or mat.get("mud"), [82, 56, 26])
+    grass = _rgb01_to_255(mat.get("grass") or mat.get("dry"), [46, 117, 31])
+    rock = _rgb01_to_255(mat.get("rock"), [107, 102, 92])
+    snow = _rgb01_to_255(mat.get("snow") or mat.get("rock"), [209, 214, 219])
     return [
         {"height": 0.0, "color": dirt},
-        {"height": 0.35, "color": grass},
-        {"height": 0.7, "color": grass},
-        {"height": 1.0, "color": rock},
+        {"height": 0.28, "color": grass},
+        {"height": 0.62, "color": grass},
+        {"height": 0.82, "color": rock},
+        {"height": 1.0, "color": snow},
     ]
 
 
@@ -169,33 +178,45 @@ def _validate_features(features) -> list:
     from .terrain import FEATURE_TYPES
 
     cleaned = []
-    for feat in features[:8]:
+    for feat in features[:10]:
         if not isinstance(feat, dict):
             continue
         kind = str(feat.get("type") or "").lower()
         if kind not in FEATURE_TYPES:
             continue
         item = {"type": kind}
-        if kind in ("river", "ridge"):
+        if kind in ("river", "ridge", "canyon", "valley"):
             points = _uv_points(feat.get("points"), min_count=2)
             if not points:
                 continue
             item["points"] = points
-            item["width"] = _clamped(feat.get("width"), 0.02, 0.2, 0.05)
-            if kind == "river":
-                item["depth"] = _clamped(feat.get("depth"), 0.1, 0.8, 0.42)
+            item["width"] = _clamped(feat.get("width"), 0.02, 0.28, 0.1 if kind in ("canyon", "valley") else 0.06)
+            if kind == "ridge":
+                item["height"] = _clamped(feat.get("height"), 0.15, 1.1, 0.5)
             else:
-                item["height"] = _clamped(feat.get("height"), 0.1, 0.8, 0.35)
+                item["depth"] = _clamped(feat.get("depth"), 0.15, 0.95, 0.55 if kind != "river" else 0.48)
         else:
             item["center"] = _uv_pair(feat.get("center"), [0.5, 0.5])
-            item["radius"] = _clamped(feat.get("radius"), 0.04, 0.4, 0.12)
+            item["radius"] = _clamped(
+                feat.get("radius"),
+                0.04,
+                0.6,
+                0.22 if kind in ("mountain", "crater") else 0.14,
+            )
             if kind in ("lake", "basin"):
-                item["depth"] = _clamped(feat.get("depth"), 0.1, 0.8, 0.4)
+                item["depth"] = _clamped(feat.get("depth"), 0.15, 0.9, 0.45)
+            elif kind == "crater":
+                item["depth"] = _clamped(feat.get("depth"), 0.2, 0.9, 0.48)
+                item["height"] = _clamped(feat.get("height"), 0.08, 0.6, 0.28)
             elif kind == "plateau":
-                item["height"] = _clamped(feat.get("height"), 0.1, 0.8, 0.32)
-                item["falloff"] = _clamped(feat.get("falloff"), 0.01, 0.2, 0.05)
+                item["height"] = _clamped(feat.get("height"), 0.12, 0.9, 0.4)
+                item["falloff"] = _clamped(feat.get("falloff"), 0.01, 0.2, 0.06)
+            elif kind == "mountain":
+                item["height"] = _clamped(feat.get("height"), 0.4, 1.25, 0.85)
             else:
-                item["height"] = _clamped(feat.get("height"), 0.08, 0.7, 0.25)
+                item["height"] = _clamped(feat.get("height"), 0.12, 0.85, 0.38)
+            item["aspect"] = _clamped(feat.get("aspect"), 0.45, 2.4, 1.0)
+            item["rot"] = _clamped(feat.get("rot"), -180.0, 180.0, 0.0)
         cleaned.append(item)
     return cleaned
 
@@ -286,7 +307,7 @@ def validate_and_place_props(props, seed: int, heightmap=None, features=None, wa
         if _is_ground_prop(name, prop.get("geometry")):
             log.warning("Skip prop %s: looks like a ground slab", name)
             continue
-        geometry = _normalize_geometry(prop.get("geometry"))
+        geometry = _normalize_geometry(prop.get("geometry"), name=name)
         if len(geometry["primitives"]) < 1:
             log.warning("Skip prop %s: no primitives", name)
             continue
@@ -307,8 +328,20 @@ def validate_and_place_props(props, seed: int, heightmap=None, features=None, wa
         else:
             rule = instances if isinstance(instances, dict) else {}
             if "count" not in rule:
-                rule["count"] = 8
+                rule["count"] = _default_count_for(name, prop)
+            else:
+                try:
+                    rule["count"] = max(int(rule["count"]), _min_count_for(name, prop))
+                except (TypeError, ValueError):
+                    rule["count"] = _default_count_for(name, prop)
             rule["count"] = min(int(rule["count"]), _max_count_for(name, prop))
+            size = prop.get("size") or (prop.get("params") or {}).get("size")
+            if size is not None and "scale_range" not in rule:
+                try:
+                    s = max(0.25, min(8.0, float(size)))
+                    rule["scale_range"] = [s * 0.88, s * 1.12]
+                except (TypeError, ValueError):
+                    pass
             try:
                 placed = place_instances(
                     rule,
@@ -359,7 +392,7 @@ def _snap_instances(instances: list, heightmap, features=None, water_level=None)
     return placed
 
 
-def _normalize_geometry(geometry) -> dict:
+def _normalize_geometry(geometry, name: str = "") -> dict:
     if not isinstance(geometry, dict):
         return {"primitives": []}
     raw = geometry.get("primitives") or []
@@ -377,8 +410,8 @@ def _normalize_geometry(geometry) -> dict:
                 for k, v in prim.items()
                 if k not in ("type", "position", "rotation", "scale", "params")
             }
-        params = _clamp_prim_params(ptype, params)
-        if _is_huge_prim(ptype, params):
+        params = _clamp_prim_params(ptype, params, allow_building=_looks_like_building(name))
+        if _is_huge_prim(ptype, params) and ptype == "plane":
             continue
         item = {"type": ptype, "params": params}
         if prim.get("position"):
@@ -447,43 +480,99 @@ def _ground_geometry(geometry: dict) -> dict:
     return geometry
 
 
+def _looks_like_building(name) -> bool:
+    lowered = str(name or "").lower()
+    return any(
+        word in lowered
+        for word in (
+            "house", "home", "hut", "cabin", "cottage", "barn", "mill", "tower",
+            "shack", "shed", "temple", "church", "дом", "домик", "хижина", "изба",
+            "башня", "мельница", "сарай",
+        )
+    )
+
+
 def _is_ground_prop(name, geometry) -> bool:
     lowered = str(name or "").lower()
+    if any(word in lowered for word in ("house", "hut", "cabin", "cottage", "barn", "tower", "дом", "хижина", "изба")):
+        return False
     if any(word in lowered for word in ("glade", "ground", "terrain", "floor", "patch", "meadow", "field", "поляна", "земля")):
         return True
     raw = (geometry or {}).get("primitives") or []
+    vertical = 0
+    slabs = 0
     for prim in raw:
         if not isinstance(prim, dict):
             continue
         ptype = str(prim.get("type") or "").lower()
         params = prim.get("params") if isinstance(prim.get("params"), dict) else prim
         if ptype == "plane":
-            return True
-        if ptype == "box":
-            w = float(params.get("width") or 0)
-            d = float(params.get("depth") or 0)
-            h = float(params.get("height") or 0)
-            if (w >= 3.5 or d >= 3.5) and h <= 1.2:
-                return True
-    return False
+            slabs += 1
+            continue
+        h = float(params.get("height") or params.get("radius") or 0)
+        w = float(params.get("width") or 0)
+        d = float(params.get("depth") or 0)
+        if ptype == "box" and (w >= 3.5 or d >= 3.5) and h <= 0.45:
+            slabs += 1
+        elif h >= 0.6 or ptype in ("cylinder", "cone", "sphere"):
+            vertical += 1
+    return slabs > 0 and vertical == 0
+
+
+def _is_building_prop(name, prop=None) -> bool:
+    lowered = str(name or "").lower()
+    tmpl = str((prop or {}).get("template") or "").lower()
+    if tmpl in ("x", "custom", "gen"):
+        return _looks_like_building(name)
+    return _looks_like_building(name)
+
+
+def _min_count_for(name, prop) -> int:
+    if _is_building_prop(name, prop):
+        return 1
+    lowered = str(name or "").lower()
+    category = str((prop or {}).get("category") or "").lower()
+    tmpl = str((prop or {}).get("template") or "").lower()
+    if tmpl in ("flower", "bush") or "flower" in lowered or "bush" in lowered:
+        return 22
+    if tmpl in ("oak", "birch", "pine", "fir") or any(w in lowered for w in ("tree", "oak", "pine", "birch", "fir", "ель", "ёлка")):
+        return 18
+    if tmpl in ("boulder", "stone", "mushroom") or any(w in lowered for w in ("rock", "stone", "boulder", "mushroom")):
+        return 10
+    if category in ("vegetation", "veg"):
+        return 16
+    return 1
+
+
+def _default_count_for(name, prop) -> int:
+    if _is_building_prop(name, prop):
+        return 1
+    return min(_max_count_for(name, prop), _min_count_for(name, prop) + 6)
 
 
 def _max_count_for(name, prop) -> int:
+    if _is_building_prop(name, prop):
+        return 3
     lowered = str(name or "").lower()
     category = str((prop or {}).get("category") or "").lower()
-    if "flower" in lowered or "grass" in lowered or category in ("decoration", "dec"):
-        return 14
-    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir")):
-        return 12
-    return 10
+    tmpl = str((prop or {}).get("template") or "").lower()
+    if tmpl == "flower" or "flower" in lowered or "grass" in lowered or category in ("decoration", "dec"):
+        return 48
+    if tmpl == "bush" or "bush" in lowered:
+        return 36
+    if tmpl in ("oak", "birch", "pine", "fir") or any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "ель", "ёлка")):
+        return 36
+    if any(word in lowered for word in ("rock", "stone", "boulder", "mushroom")):
+        return 24
+    return 20
 
 
-def _clamp_prim_params(ptype: str, params: dict) -> dict:
+def _clamp_prim_params(ptype: str, params: dict, allow_building: bool = False) -> dict:
     limits = {
-        "box": {"width": 1.8, "height": 2.4, "depth": 1.8},
-        "sphere": {"radius": 1.1},
-        "cylinder": {"rTop": 0.7, "rBottom": 0.9, "height": 2.2},
-        "cone": {"radius": 1.2, "height": 2.2},
+        "box": {"width": 4.5, "height": 3.6, "depth": 4.5} if allow_building else {"width": 1.8, "height": 2.4, "depth": 1.8},
+        "sphere": {"radius": 1.6} if allow_building else {"radius": 1.1},
+        "cylinder": {"rTop": 1.2, "rBottom": 1.4, "height": 3.4} if allow_building else {"rTop": 0.7, "rBottom": 0.9, "height": 2.2},
+        "cone": {"radius": 2.2, "height": 2.8} if allow_building else {"radius": 1.2, "height": 2.2},
         "torus": {"radius": 0.8, "tube": 0.25},
         "octahedron": {"radius": 0.9},
         "icosahedron": {"radius": 0.9},

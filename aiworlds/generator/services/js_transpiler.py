@@ -30,27 +30,26 @@ LEAF_FRAGMENT = """varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vPosition;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float n2(vec2 p){
+float noise(vec2 p){
   vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
 }
+float fbm(vec2 p){ return noise(p)*0.57 + noise(p*2.13)*0.28 + noise(p*4.27)*0.15; }
+vec3 shadeLit(vec3 albedo, vec3 n, vec3 wp){
+  vec3 L = normalize(vec3(0.46, 0.84, 0.26));
+  float wrap = max(dot(normalize(n), L), 0.0) * 0.62 + 0.38;
+  float band = floor(wrap * 5.0 + 0.35) / 5.0;
+  float lit = mix(wrap, band, 0.55);
+  vec3 light = mix(vec3(0.58, 0.68, 0.88), vec3(1.06, 0.97, 0.84), lit);
+  vec3 c = albedo * light * (0.82 + 0.18 * clamp(n.y, 0.0, 1.0));
+  c += (hash(floor(wp.xz * 18.0)) - 0.5) * 0.04;
+  return floor(max(c, vec3(0.02)) * 20.0 + 0.5) / 20.0;
+}
 void main() {
-  vec3 n = normalize(vNormal);
-  float a = n2(vUv * 7.0);
-  float b = n2(vUv * 18.0 + 3.7);
-  float c0 = n2(vPosition.xz * 5.0);
-  float clumps = step(0.38, a * 0.55 + b * 0.45);
-  float holes = step(0.82, b);
-  vec3 shade = vec3(0.07, 0.22, 0.06);
-  vec3 mid = vec3(0.14, 0.42, 0.10);
-  vec3 lite = vec3(0.26, 0.62, 0.16);
-  vec3 c = mix(shade, mix(mid, lite, step(0.55, c0)), clumps);
-  c = mix(c, shade * 0.6, holes);
-  float lamb = 0.55 + 0.45 * max(dot(n, normalize(vec3(0.35, 0.9, 0.2))), 0.0);
-  c *= lamb;
-  c = floor(c * 8.0 + 0.5) / 8.0;
-  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.035;
-  gl_FragColor = vec4(c, 1.0);
+  float clump = fbm(vPosition.xz * 2.8 + vUv * 5.0);
+  vec3 c = mix(vec3(0.10, 0.32, 0.08), vec3(0.22, 0.58, 0.14), smoothstep(0.28, 0.62, clump));
+  c = mix(c, vec3(0.34, 0.72, 0.18), smoothstep(0.62, 0.88, clump));
+  gl_FragColor = vec4(shadeLit(c, vNormal, vPosition), 1.0);
 }"""
 
 TERRAIN_VERTEX = """varying vec2 vUv;
@@ -70,23 +69,25 @@ BARK_FRAGMENT = """varying vec2 vUv;
 varying vec3 vNormal;
 varying vec3 vPosition;
 float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+}
+vec3 shadeLit(vec3 albedo, vec3 n, vec3 wp){
+  vec3 L = normalize(vec3(0.46, 0.84, 0.26));
+  float wrap = max(dot(normalize(n), L), 0.0) * 0.62 + 0.38;
+  float band = floor(wrap * 5.0 + 0.35) / 5.0;
+  float lit = mix(wrap, band, 0.55);
+  vec3 light = mix(vec3(0.58, 0.68, 0.88), vec3(1.06, 0.97, 0.84), lit);
+  vec3 c = albedo * light * (0.82 + 0.18 * clamp(n.y, 0.0, 1.0));
+  c += (hash(floor(wp.xz * 18.0)) - 0.5) * 0.04;
+  return floor(max(c, vec3(0.02)) * 20.0 + 0.5) / 20.0;
+}
 void main() {
-  vec3 n = normalize(vNormal);
-  float ridges = abs(fract(vPosition.y * 9.0 + vUv.x * 2.0) - 0.5);
-  float cracks = step(0.92, hash(floor(vec2(vUv.x * 14.0, vPosition.y * 22.0))));
-  float flakes = step(0.62, hash(floor(vUv * 16.0)));
-  float moss = step(0.55, 1.0 - clamp(vPosition.y * 0.7, 0.0, 1.0)) * step(0.5, hash(floor(vPosition.xz * 10.0)));
-  vec3 dark = vec3(0.18, 0.10, 0.05);
-  vec3 mid = vec3(0.34, 0.20, 0.09);
-  vec3 lite = vec3(0.48, 0.30, 0.14);
-  vec3 c = mix(dark, lite, smoothstep(0.08, 0.28, ridges));
-  c = mix(c, mid, flakes * 0.35);
-  c = mix(c, dark * 0.45, cracks);
-  c = mix(c, vec3(0.16, 0.28, 0.08), moss * 0.7);
-  c *= 0.5 + 0.5 * max(dot(n, normalize(vec3(0.4, 0.8, 0.2))), 0.0);
-  c = floor(c * 7.0 + 0.5) / 7.0;
-  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.03;
-  gl_FragColor = vec4(c, 1.0);
+  float ridge = abs(fract(vPosition.y * 6.5 + noise(vPosition.xz * 2.0) * 0.4) - 0.5);
+  vec3 c = mix(vec3(0.28, 0.16, 0.07), vec3(0.48, 0.28, 0.12), noise(vPosition.xy * 3.0));
+  c = mix(c, vec3(0.18, 0.10, 0.04), step(0.18, ridge) * 0.5);
+  gl_FragColor = vec4(shadeLit(c, vNormal, vPosition), 1.0);
 }"""
 
 
@@ -185,16 +186,17 @@ function compileShader(config, fallbackColor = 0x7a9a5a) {{
       vertexShader: config.vertexShader,
       fragmentShader: config.fragmentShader,
       lights: false,
+      fog: false,
+      toneMapped: false,
       side: THREE.DoubleSide,
     }});
     mat.needsUpdate = true;
     return mat;
   }} catch (e) {{
     console.warn('[World] ShaderMaterial failed, solid color used:', e.message);
-    return new THREE.MeshStandardMaterial({{
+    return new THREE.MeshLambertMaterial({{
       color: fallbackColor,
       flatShading: true,
-      roughness: 0.9,
     }});
   }}
 }}
@@ -231,7 +233,7 @@ scene.fog = new THREE.FogExp2(
     (ATMOSPHERE.fog_color?.[1] ?? 200) / 255,
     (ATMOSPHERE.fog_color?.[2] ?? 230) / 255
   ),
-  Math.min(ATMOSPHERE.fog_density ?? 0.012, 0.02)
+  Math.min(ATMOSPHERE.fog_density ?? 0.008, 0.014)
 );
 
 const camera = new THREE.PerspectiveCamera(
@@ -240,9 +242,12 @@ const camera = new THREE.PerspectiveCamera(
 camera.position.set(15, 12, 15);
 camera.lookAt(0, 0, 0);
 
-const renderer = new THREE.WebGLRenderer({{ antialias: true }});
+THREE.ColorManagement.enabled = false;
+const renderer = new THREE.WebGLRenderer({{ antialias: false }});
 renderer.setSize(container.clientWidth, container.clientHeight);
 renderer.setPixelRatio(1);
+renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 container.appendChild(renderer.domElement);
@@ -254,7 +259,7 @@ controls.target.set(0, 1, 0);
 controls.maxPolarAngle = Math.PI * 0.9;
 
 // Свет
-const ambient = new THREE.AmbientLight(0x8899bb, 0.6);
+const ambient = new THREE.AmbientLight(0x9aacc8, 0.72);
 ambient.color.setRGB(
   ATMOSPHERE.ambient_color[0] / 255,
   ATMOSPHERE.ambient_color[1] / 255,
@@ -262,7 +267,7 @@ ambient.color.setRGB(
 );
 scene.add(ambient);
 
-const sun = new THREE.DirectionalLight(0xffeedd, 1.3);
+const sun = new THREE.DirectionalLight(0xffe6b8, 1.25);
 sun.color.setRGB(
   ATMOSPHERE.sun_color[0] / 255,
   ATMOSPHERE.sun_color[1] / 255,
@@ -278,7 +283,7 @@ sun.shadow.camera.top = 20;
 sun.shadow.camera.bottom = -20;
 scene.add(sun);
 
-const fillLight = new THREE.DirectionalLight(0x6688cc, 0.35);
+const fillLight = new THREE.DirectionalLight(0x6e88b8, 0.28);
 fillLight.position.set(-10, 5, -10);
 scene.add(fillLight);
 
@@ -380,55 +385,130 @@ function heightAt(x, z) {{
 }}
 
 const colorTex = loadB64Texture(COLORMAP_B64, true);
-colorTex.colorSpace = THREE.SRGBColorSpace;
+colorTex.colorSpace = THREE.NoColorSpace;
+colorTex.wrapS = THREE.ClampToEdgeWrapping;
+colorTex.wrapT = THREE.ClampToEdgeWrapping;
 const terrainGeo = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, HEIGHTMAP_RES - 1, HEIGHTMAP_RES - 1);
 terrainGeo.rotateX(-Math.PI / 2);
 const tPos = terrainGeo.attributes.position;
+const tCols = new Float32Array(tPos.count * 3);
+const gCol = new THREE.Color({u_grass});
+const dCol = new THREE.Color({u_dirt});
+const rCol = new THREE.Color({u_rock});
+const sCol = new THREE.Color({u_snow});
 for (let i = 0; i < tPos.count; i++) {{
-  tPos.setY(i, heightAt(tPos.getX(i), tPos.getZ(i)));
+  const y = heightAt(tPos.getX(i), tPos.getZ(i));
+  tPos.setY(i, y);
+  const h = THREE.MathUtils.clamp(y / HEIGHT_SCALE, 0, 1);
+  const c = dCol.clone().lerp(gCol, THREE.MathUtils.smoothstep(h, 0.08, 0.32));
+  if (h > 0.62) c.lerp(rCol, THREE.MathUtils.smoothstep(h, 0.62, 0.82));
+  if (h > 0.84) c.lerp(sCol, THREE.MathUtils.smoothstep(h, 0.84, 0.96));
+  tCols[i * 3] = Math.round(c.r * 20) / 20;
+  tCols[i * 3 + 1] = Math.round(c.g * 20) / 20;
+  tCols[i * 3 + 2] = Math.round(c.b * 20) / 20;
 }}
 tPos.needsUpdate = true;
+terrainGeo.setAttribute('color', new THREE.BufferAttribute(tCols, 3));
 terrainGeo.computeVertexNormals();
+terrainGeo.computeBoundingSphere();
+terrainGeo.computeBoundingBox();
 
+const terrainFallback = new THREE.MeshLambertMaterial({{
+  color: 0xffffff,
+  vertexColors: true,
+  flatShading: true,
+  side: THREE.DoubleSide,
+  fog: true,
+}});
 const terrainShader = {{
   uniforms: {{
     uTime: {{ value: 0 }},
     uMap: {{ value: colorTex }},
-    uGrass: {{ value: new THREE.Vector3({u_grass}) }},
-    uDirt: {{ value: new THREE.Vector3({u_dirt}) }},
-    uRock: {{ value: new THREE.Vector3({u_rock}) }},
-{terrain_extra_uniforms}
+    uGrass: {{ value: new THREE.Vector3({u_grass_vec}) }},
+    uDirt: {{ value: new THREE.Vector3({u_dirt_vec}) }},
+    uRock: {{ value: new THREE.Vector3({u_rock_vec}) }},
+    uSnow: {{ value: new THREE.Vector3({u_snow_vec}) }},
   }},
   vertexShader: {terrain_vertex_json},
   fragmentShader: {terrain_fragment_json},
 }};
-const terrainMat = compileShader(terrainShader, 0x3d7a32);
-if (terrainMat.uniforms && !terrainMat.uniforms.uMap) {{
-  terrainMat.map = colorTex;
+let terrainMat = compileShader(terrainShader, 0x4a8a3a);
+if (!terrainMat.isShaderMaterial) {{
+  terrainMat = terrainFallback;
+}} else {{
+  terrainMat.side = THREE.DoubleSide;
+  terrainMat.fog = false;
+  terrainMat.toneMapped = false;
 }}
-terrainMat.side = THREE.FrontSide;
-
 const terrain = new THREE.Mesh(terrainGeo, terrainMat);
 terrain.receiveShadow = true;
-terrain.castShadow = true;
+terrain.castShadow = false;
+terrain.frustumCulled = false;
 worldGroup.add(terrain);
+requestAnimationFrame(() => {{
+  const gl = renderer.getContext();
+  const prog = terrainMat.program && terrainMat.program.program;
+  if (terrainMat.isShaderMaterial && prog && gl && gl.getProgramParameter(prog, gl.LINK_STATUS) === false) {{
+    console.warn('[World] Terrain shader failed, vertex-color Lambert used');
+    terrain.material = terrainFallback;
+  }}
+}});
 
-if (WATER_LEVEL != null) {{
-  const water = new THREE.Mesh(
-    new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, 1, 1),
-    new THREE.MeshStandardMaterial({{
-      color: 0x2a78b8,
-      transparent: true,
-      opacity: 0.7,
-      roughness: 0.35,
-      metalness: 0.05,
-      flatShading: true,
-    }})
+const waterMat = new THREE.MeshLambertMaterial({{
+  color: 0x3a8ec8,
+  transparent: true,
+  opacity: 0.82,
+  flatShading: true,
+}});
+function addRiverWater(path, widthUv) {{
+  if (!path || path.length < 2) return;
+  const halfW = Math.max(0.35, (widthUv || 0.05) * TERRAIN_SIZE * 0.7);
+  const left = [];
+  const right = [];
+  for (let i = 0; i < path.length; i++) {{
+    const p = path[i];
+    const x = (p[0] - 0.5) * TERRAIN_SIZE;
+    const z = (p[1] - 0.5) * TERRAIN_SIZE;
+    const prev = path[Math.max(0, i - 1)];
+    const next = path[Math.min(path.length - 1, i + 1)];
+    const dx = (next[0] - prev[0]) * TERRAIN_SIZE;
+    const dz = (next[1] - prev[1]) * TERRAIN_SIZE;
+    const len = Math.max(0.0001, Math.hypot(dx, dz));
+    const nx = -dz / len;
+    const nz = dx / len;
+    const y = heightAt(x, z) + 0.08;
+    left.push(new THREE.Vector3(x + nx * halfW, y, z + nz * halfW));
+    right.push(new THREE.Vector3(x - nx * halfW, y, z - nz * halfW));
+  }}
+  const geo = new THREE.BufferGeometry();
+  const verts = [];
+  const idx = [];
+  for (let i = 0; i < left.length; i++) {{
+    verts.push(left[i].x, left[i].y, left[i].z);
+    verts.push(right[i].x, right[i].y, right[i].z);
+    if (i < left.length - 1) {{
+      const a = i * 2;
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }}
+  }}
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, waterMat);
+  mesh.renderOrder = 1;
+  worldGroup.add(mesh);
+}}
+for (const river of RIVER_PATHS) addRiverWater(river.points, river.width);
+for (const lake of LAKE_SPOTS) {{
+  const x = (lake.center[0] - 0.5) * TERRAIN_SIZE;
+  const z = (lake.center[1] - 0.5) * TERRAIN_SIZE;
+  const mesh = new THREE.Mesh(
+    new THREE.CircleGeometry(Math.max(0.7, (lake.radius || 0.12) * TERRAIN_SIZE), 14),
+    waterMat
   );
-  water.rotation.x = -Math.PI / 2;
-  water.position.y = WATER_LEVEL * HEIGHT_SCALE;
-  water.renderOrder = 1;
-  worldGroup.add(water);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(x, heightAt(x, z) + 0.07, z);
+  worldGroup.add(mesh);
 }}
 
 """
@@ -569,45 +649,17 @@ def transpile_to_js(plan: dict, heightmap_b64: str = "", colormap_b64: str = "",
         if feat.get("type") in ("lake", "basin") and feat.get("center"):
             lakes.append({"center": feat["center"], "radius": feat.get("radius", 0.12)})
     tsh = (plan.get("terrain") or {}).get("shader") or {}
-    terrain_fragment = _stabilize_terrain_fragment(tsh.get("fragment") or """varying vec2 vUv;
-varying vec3 vNormal;
-varying vec3 vWorldPos;
-float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float n2(vec2 p){
-  vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
-  return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x), mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
-}
-void main() {
-  vec3 n = normalize(vNormal);
-  float h = clamp(vWorldPos.y / 4.0, 0.0, 1.0);
-  float slope = 1.0 - clamp(n.y, 0.0, 1.0);
-  float patches = n2(vWorldPos.xz * 2.4);
-  float tufts = n2(vWorldPos.xz * 9.0);
-  float blades = step(0.52, n2(vWorldPos.xz * 28.0));
-  vec3 mud = vec3(0.22, 0.18, 0.10);
-  vec3 sand = vec3(0.55, 0.46, 0.24);
-  vec3 grassA = vec3(0.16, 0.40, 0.12);
-  vec3 grassB = vec3(0.28, 0.58, 0.16);
-  vec3 dry = vec3(0.42, 0.40, 0.16);
-  vec3 rock = vec3(0.38, 0.36, 0.32);
-  vec3 c = mix(mud, sand, step(0.12, h));
-  c = mix(c, mix(grassA, grassB, step(0.5, patches)), step(0.22, h));
-  c = mix(c, dry, step(0.62, h));
-  c = mix(c, rock, step(0.82, h));
-  c = mix(c, grassA * 0.75, blades * (1.0 - step(0.7, h)) * 0.45);
-  c = mix(c, mud, step(0.62, tufts) * 0.2);
-  c = mix(c, rock, smoothstep(0.25, 0.55, slope));
-  c *= 0.55 + 0.45 * max(dot(n, normalize(vec3(0.4, 0.85, 0.2))), 0.0);
-  c = floor(c * 8.0 + 0.5) / 8.0;
-  c += (hash(floor(gl_FragCoord.xy)) - 0.5) * 0.03;
-  gl_FragColor = vec4(c, 1.0);
-}""")
-    tu = (tsh.get("uniforms") or {}) if isinstance(tsh, dict) else {}
+    tu = dict((tsh.get("uniforms") or {}) if isinstance(tsh, dict) else {})
     grass = _vec3_uniform(tu.get("uGrass"), (0.22, 0.52, 0.16))
-    dirt = _vec3_uniform(tu.get("uDirt"), (0.32, 0.22, 0.12))
-    rock = _vec3_uniform(tu.get("uRock"), (0.42, 0.40, 0.36))
-    extra = {k: v for k, v in tu.items() if k not in ("uTime", "uMap", "uGrass", "uDirt", "uRock")}
-    extra_lines = _build_uniforms_lines(extra)
+    dirt = _vec3_uniform(tu.get("uDirt"), (0.42, 0.28, 0.12))
+    rock = _vec3_uniform(tu.get("uRock"), (0.52, 0.48, 0.42))
+    snow = _vec3_uniform(tu.get("uSnow"), (0.90, 0.92, 0.94))
+    def _hex(rgb):
+        return f"0x{int(rgb[0]*255):02x}{int(rgb[1]*255):02x}{int(rgb[2]*255):02x}"
+    from .templates import TERRAIN_FRAGMENT
+    terrain_fragment = _stabilize_terrain_fragment((tsh.get("fragment") if isinstance(tsh, dict) else None) or "")
+    if "gl_FragColor" not in terrain_fragment or "precision" in terrain_fragment:
+        terrain_fragment = TERRAIN_FRAGMENT
     parts.append(JS_TERRAIN.format(
         heightmap_js=heightmap_js,
         heightmap_res=128,
@@ -615,14 +667,18 @@ void main() {
         height_scale=4.0,
         water_level="null" if water is None else float(water),
         colormap_b64=colormap_b64 or "",
-        river_paths_json="[]",
-        lake_spots_json="[]",
+        river_paths_json=json.dumps(rivers),
+        lake_spots_json=json.dumps(lakes),
         terrain_vertex_json=json.dumps(TERRAIN_VERTEX),
         terrain_fragment_json=json.dumps(terrain_fragment),
-        u_grass=f"{grass[0]}, {grass[1]}, {grass[2]}",
-        u_dirt=f"{dirt[0]}, {dirt[1]}, {dirt[2]}",
-        u_rock=f"{rock[0]}, {rock[1]}, {rock[2]}",
-        terrain_extra_uniforms=(extra_lines + ",") if extra_lines else "",
+        u_grass=_hex(grass),
+        u_dirt=_hex(dirt),
+        u_rock=_hex(rock),
+        u_snow=_hex(snow),
+        u_grass_vec=f"{grass[0]}, {grass[1]}, {grass[2]}",
+        u_dirt_vec=f"{dirt[0]}, {dirt[1]}, {dirt[2]}",
+        u_rock_vec=f"{rock[0]}, {rock[1]}, {rock[2]}",
+        u_snow_vec=f"{snow[0]}, {snow[1]}, {snow[2]}",
     ))
 
     # --- Props ---
@@ -744,13 +800,18 @@ def _stabilize_terrain_fragment(src: str) -> str:
 def _is_tree_prop(name: str, geometry: dict, template: str | None = None) -> bool:
     lowered = str(name or "").lower()
     tmpl = str(template or "").lower()
-    if tmpl in ("oak", "birch", "pine", "bush", "flower", "mushroom", "cactus"):
+    if any(word in lowered for word in ("house", "hut", "cabin", "cottage", "barn", "tower", "дом", "хижина", "изба")):
+        return False
+    if tmpl in ("oak", "birch", "pine", "fir", "bush", "flower", "mushroom", "cactus"):
         return True
-    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "willow", "bush", "flower", "mushroom", "cactus")):
+    if any(word in lowered for word in ("tree", "oak", "pine", "birch", "fir", "spruce", "ёлка", "елка", "ель", "willow", "bush", "flower", "mushroom", "cactus")):
         return True
     types = [str(p.get("type") or "") for p in (geometry or {}).get("primitives") or []]
+    has_box = "box" in types
     has_trunk = "cylinder" in types
     has_crown = any(t in types for t in ("sphere", "cone", "icosahedron"))
+    if has_box:
+        return False
     return has_trunk and has_crown
 
 
@@ -788,7 +849,7 @@ def _sanitize_js_identifier(name: str) -> str:
     return safe
 
 
-def _build_uniforms_lines(uniforms: dict) -> str:
+def _build_uniforms_lines(uniforms: dict, ensure_time: bool = True) -> str:
     """
     Строит JS-код для uniforms.
     Возвращает строки, разделённые ',\n' — БЕЗ запятой в конце.
@@ -798,7 +859,7 @@ def _build_uniforms_lines(uniforms: dict) -> str:
     u = dict(uniforms or {})
 
     # Гарантируем uTime
-    if 'uTime' not in u:
+    if ensure_time and 'uTime' not in u:
         u['uTime'] = {'type': 'float', 'value': 0}
 
     lines = []

@@ -31,11 +31,10 @@ def place_instances(
     count = int(rule.get("count") or 0)
     if count < 1:
         raise ValueError("instances.count должен быть >= 1")
-    count = min(count, 18)
+    count = min(count, 48)
 
     distribution = str(rule.get("distribution") or "scattered").lower()
     if distribution not in VALID_DISTRIBUTIONS:
-        log.warning("Unknown distribution %s, using scattered", distribution)
         distribution = "scattered"
     stay_dry = keep_dry and distribution != "river_line"
 
@@ -45,6 +44,8 @@ def place_instances(
     lo, hi = float(scale_range[0]), float(scale_range[1])
     if hi < lo:
         lo, hi = hi, lo
+    lo = max(0.2, min(8.0, lo))
+    hi = max(lo, min(8.0, hi))
 
     rng = np.random.default_rng(int(seed) + count * 17)
     wet_cut = None if water_level is None else float(water_level) + 0.045

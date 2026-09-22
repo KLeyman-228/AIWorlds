@@ -6,16 +6,16 @@ from __future__ import annotations
 import logging
 import time
 
-import numpy as np
-
 from .ai_client import generate_props_parallel, generate_world_metadata
 from .js_transpiler import transpile_to_js
 from .terrain import (
     choose_water_level,
     colormap_to_base64,
+    default_river,
     generate_color_map,
     generate_heightmap,
     heightmap_to_js_array,
+    mix_seed,
 )
 from .templates import instantiate_terrain_shader
 from .validator import validate_and_place_props, validate_plan
@@ -52,28 +52,29 @@ def build_world_js(user_prompt: str, model: str | None = None, progress=None) ->
         )
 
     _status("terrain_generating")
+    seed = mix_seed(user_prompt, plan["terrain"].get("seed"))
+    plan["terrain"]["seed"] = seed
+    prompt_l = (user_prompt or "").lower()
+    style = plan["terrain"].get("style") or _infer_style(prompt_l)
+    plan["terrain"]["style"] = style
+    features = plan["terrain"].setdefault("features", [])
+    wants_water = any(
+        word in prompt_l
+        for word in ("река", "реку", "озеро", "пруд", "вода", "вод", "river", "lake", "pond", "stream")
+    )
+    has_water_feat = any(f.get("type") in ("river", "lake", "basin") for f in features)
+    if wants_water and not has_water_feat:
+        features.append(default_river(seed))
+    features.extend(_fallback_landforms(prompt_l, features, seed))
     heightmap = generate_heightmap(
         size=128,
         scale=plan["terrain"]["scale"],
         octaves=plan["terrain"]["octaves"],
-        seed=plan["terrain"]["seed"],
-        features=plan["terrain"].get("features") or [],
+        seed=seed,
+        features=features,
+        style=style,
+        amplitude=plan["terrain"].get("amplitude", 1.0),
     )
-    features = plan["terrain"].setdefault("features", [])
-    if not any(f.get("type") in ("river", "lake", "basin") for f in features):
-        features.append({
-            "type": "river",
-            "points": [[0.02, 0.38], [0.28, 0.46], [0.55, 0.52], [0.98, 0.62]],
-            "width": 0.055,
-            "depth": 0.42,
-        })
-        heightmap = generate_heightmap(
-            size=128,
-            scale=plan["terrain"]["scale"],
-            octaves=plan["terrain"]["octaves"],
-            seed=plan["terrain"]["seed"],
-            features=features,
-        )
     plan["terrain"]["water_level"] = choose_water_level(heightmap, features)
     plan["props"] = validate_and_place_props(
         plan.get("props") or meta.get("props"),
@@ -103,3 +104,86 @@ def build_world_js(user_prompt: str, model: str | None = None, progress=None) ->
         "js_code": js_code,
         "plan": plan,
     }
+
+
+def _infer_style(prompt: str) -> str:
+    if any(w in prompt for w in ("остров", "island", "архипелаг")):
+        return "island"
+    if any(w in prompt for w in ("дюн", "пустын", "dune", "desert", "саванн")):
+        return "dunes"
+    if any(w in prompt for w in ("каньон", "ущел", "canyon", "gorge")):
+        return "canyon"
+    if any(w in prompt for w in ("долин", "valley")):
+        return "valley"
+    if any(w in prompt for w in ("кратер", "crater", "вулкан", "volcano")):
+        return "crater"
+    if any(w in prompt for w in ("горн", "горы", "альп", "пик", "хребет", "mountain", "peak", "ridge")):
+        return "mountains"
+    if any(w in prompt for w in ("равнин", "луг", "поле", "степь", "plains", "meadow", "field", "flat")):
+        return "plains"
+    if any(w in prompt for w in ("холм", "hill")):
+        return "hills"
+    return "hills"
+
+
+def _prompt_uv(prompt: str) -> list[float]:
+    u, v = 0.5, 0.5
+    if any(w in prompt for w in ("слева", "левый", "запад", "left", "west")):
+        u = 0.2
+    if any(w in prompt for w in ("справа", "правый", "восток", "right", "east")):
+        u = 0.8
+    if any(w in prompt for w in ("север", "сверху", "north")):
+        v = 0.82
+    if any(w in prompt for w in ("юг", "снизу", "south")):
+        v = 0.18
+    if any(w in prompt for w in ("центр", "середин", "посреди", "center", "middle")):
+        u, v = 0.5, 0.5
+    if "юго-запад" in prompt or "southwest" in prompt:
+        u, v = 0.18, 0.18
+    if "юго-восток" in prompt or "southeast" in prompt:
+        u, v = 0.82, 0.18
+    if "северо-запад" in prompt or "northwest" in prompt:
+        u, v = 0.18, 0.82
+    if "северо-восток" in prompt or "northeast" in prompt:
+        u, v = 0.82, 0.82
+    return [u, v]
+
+
+def _has_type(features: list, kinds: tuple[str, ...]) -> bool:
+    return any(f.get("type") in kinds for f in features)
+
+
+def _fallback_landforms(prompt: str, features: list, seed: int) -> list:
+    extra = []
+    uv = _prompt_uv(prompt)
+    if any(w in prompt for w in ("хребет", "ridge")) and not _has_type(features, ("ridge",)):
+        extra.append({
+            "type": "ridge",
+            "points": [[uv[0], 0.08], [uv[0] + 0.04, 0.5], [uv[0] - 0.02, 0.92]],
+            "width": 0.08,
+            "height": 0.62,
+        })
+    elif any(w in prompt for w in ("гора", "гору", "горы", "пик", "mountain", "peak")) and not _has_type(features, ("mountain", "ridge")):
+        extra.append({"type": "mountain", "center": uv, "radius": 0.24, "height": 0.95})
+    elif any(w in prompt for w in ("холм", "hill")) and not _has_type(features, ("mound", "mountain")):
+        extra.append({"type": "mound", "center": uv, "radius": 0.18, "height": 0.42})
+    if any(w in prompt for w in ("каньон", "ущел", "canyon")) and not _has_type(features, ("canyon", "valley")):
+        extra.append({
+            "type": "canyon",
+            "points": [[0.08, uv[1]], [0.5, uv[1] + 0.04], [0.92, uv[1] - 0.03]],
+            "width": 0.12,
+            "depth": 0.62,
+        })
+    if any(w in prompt for w in ("долин", "valley")) and not _has_type(features, ("valley", "canyon")):
+        extra.append({
+            "type": "valley",
+            "points": [[uv[0], 0.06], [uv[0] + 0.03, 0.5], [uv[0] - 0.02, 0.94]],
+            "width": 0.16,
+            "depth": 0.42,
+        })
+    if any(w in prompt for w in ("кратер", "crater")) and not _has_type(features, ("crater",)):
+        extra.append({"type": "crater", "center": uv, "radius": 0.18, "depth": 0.5, "height": 0.3})
+    if any(w in prompt for w in ("плато", "plateau")) and not _has_type(features, ("plateau",)):
+        extra.append({"type": "plateau", "center": uv, "radius": 0.22, "height": 0.48})
+    return extra
+

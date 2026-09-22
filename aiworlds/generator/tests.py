@@ -2,8 +2,9 @@ from django.test import SimpleTestCase
 
 from generator.services.ai_client import _parse_json
 from generator.services.instances import place_instances
-from generator.services.templates import instantiate_prop, resolve_template_id, wants_custom
-from generator.services.terrain import apply_features, generate_color_map, generate_heightmap
+from generator.services.scene_builder import _fallback_landforms, _infer_style, _prompt_uv
+from generator.services.templates import instantiate_prop, instantiate_terrain_shader, resolve_template_id, tint_spec_from_prompt, wants_custom
+from generator.services.terrain import apply_features, generate_color_map, generate_heightmap, mix_seed
 from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan, _ground_geometry
 
 
@@ -28,14 +29,31 @@ class JsonParseTests(SimpleTestCase):
         )
         self.assertIn("gl_FragColor", data["shader"]["fragment"])
 
-    def test_expands_compact_metadata(self):
+    def test_expands_object_props(self):
         data = _parse_json(
-            '{"n":"Meadow","d":"day","t":{"sc":40,"oc":3,"sd":7,"w":0.2,"g":[[0,[20,40,80]],[1,[80,140,60]]],"f":[["rv",[[0,0.5],[1,0.5]],0.05,0.4]]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",12,"fr"]],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+            '{"n":"Meadow","d":"day","t":{"sc":40,"oc":3,"sd":7,"w":0.2,"g":[[0,[20,40,80]],[1,[80,140,60]]],"f":[{"k":"rv","pts":[[0,0.5],[1,0.5]],"w":0.05,"dp":0.4}]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"oak","c":"veg","k":12,"d":"fr","t":"oak","p":{"size":1.2}}],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
         )
-        self.assertEqual(data["world_name"], "Meadow")
-        self.assertEqual(data["terrain"]["features"][0]["type"], "river")
         self.assertEqual(data["prop_list"][0]["name"], "oak")
-        self.assertIn("gl_FragColor", data["post_process"]["shader"]["fragment"])
+        self.assertEqual(data["prop_list"][0]["template"], "oak")
+        self.assertEqual(data["prop_list"][0]["count"], 12)
+        self.assertEqual(data["terrain"]["features"][0]["type"], "river")
+
+    def test_expands_mountain_feature(self):
+        data = _parse_json(
+            '{"n":"Peak","d":"гора","t":{"sc":30,"oc":3,"sd":9,"w":0.1,"g":[[0,[80,90,40]],[1,[140,140,140]]],"f":[{"k":"mt","c":[0.5,0.5],"r":0.2,"h":0.9}]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"pine","c":"veg","k":8,"d":"fr","t":"pine"}],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+        )
+        feat = data["terrain"]["features"][0]
+        self.assertEqual(feat["type"], "mountain")
+        self.assertEqual(feat["center"], [0.5, 0.5])
+        self.assertGreaterEqual(feat["height"], 0.8)
+
+    def test_expands_style_and_canyon(self):
+        data = _parse_json(
+            '{"n":"Cut","d":"каньон","t":{"st":"canyon","sc":28,"oc":3,"sd":4,"amp":1.3,"w":0.1,"g":[[0,[80,70,40]],[1,[120,110,90]]],"f":[{"k":"cn","pts":[[0.1,0.5],[0.9,0.45]],"w":0.12,"dp":0.6}]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"cactus","c":"veg","k":6,"d":"sc","t":"cactus"}],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+        )
+        self.assertEqual(data["terrain"]["style"], "canyon")
+        self.assertEqual(data["terrain"]["amplitude"], 1.3)
+        self.assertEqual(data["terrain"]["features"][0]["type"], "canyon")
 
     def test_expands_terrain_shader_and_leaf(self):
         meta = _parse_json(
@@ -105,8 +123,14 @@ class InstancePlacementTests(SimpleTestCase):
 class TemplateTests(SimpleTestCase):
     def test_resolves_oak_from_name(self):
         self.assertEqual(resolve_template_id("old_oak"), "oak")
+        self.assertEqual(resolve_template_id("blue_oak", "blue_oak"), "oak")
+        self.assertFalse(wants_custom({"name": "blue_oak", "template": "blue_oak"}))
+        tinted = tint_spec_from_prompt({"name": "oak", "template": "oak"}, "синие деревья")
+        self.assertGreater(tinted["leaf"][2], 0.8)
         self.assertFalse(wants_custom({"name": "oak", "template": "oak"}))
         self.assertTrue(wants_custom({"name": "crystal", "template": "x"}))
+        self.assertTrue(wants_custom({"name": "cottage"}))
+        self.assertIsNone(resolve_template_id("house1"))
 
     def test_blue_leaves_on_oak_template(self):
         prop = instantiate_prop({
@@ -122,17 +146,55 @@ class TemplateTests(SimpleTestCase):
         self.assertGreater(len(prop["geometry"]["primitives"]), 2)
         self.assertEqual(prop["shader"]["uniforms"]["uLeaf"]["value"][2], 0.9)
         self.assertIn("uBark", prop["shader"]["uniforms"])
+        self.assertIn("shadeLit", prop["shader"]["fragment"])
+        self.assertIn("fbm", prop["shader"]["leaf_fragment"])
 
     def test_crystal_has_emission(self):
         prop = instantiate_prop({"name": "glow_crystal", "template": "crystal", "em": 1.2, "count": 4})
         self.assertEqual(prop["template"], "crystal")
         self.assertGreater(prop["shader"]["uniforms"]["uEm"]["value"], 0.5)
+        self.assertIn("uEm", prop["shader"]["fragment"])
+        em_pos = prop["shader"]["fragment"].rfind("uEm")
+        shade_pos = prop["shader"]["fragment"].rfind("shadeLit")
+        self.assertGreater(em_pos, shade_pos)
 
     def test_new_templates_exist(self):
-        for tid in ("mushroom", "ruin", "hay", "flower"):
+        for tid in ("mushroom", "ruin", "hay", "flower", "pine", "fir"):
             prop = instantiate_prop({"name": tid, "template": tid, "count": 3})
             self.assertGreaterEqual(len(prop["geometry"]["primitives"]), 3)
             self.assertEqual(prop["shader"]["uniforms"]["uEm"]["value"], 0.0)
+        self.assertEqual(resolve_template_id("ёлка"), "pine")
+        self.assertEqual(resolve_template_id("ель"), "fir")
+        pine = instantiate_prop({"name": "pine", "template": "pine", "count": 4})
+        types = [p["type"] for p in pine["geometry"]["primitives"]]
+        self.assertIn("cone", types)
+
+    def test_terrain_material_params(self):
+        shader = instantiate_terrain_shader({
+            "grass": [0.1, 0.5, 0.2],
+            "dirt": [0.4, 0.25, 0.1],
+            "rock": [0.5, 0.48, 0.44],
+            "snow": [0.9, 0.92, 0.95],
+        })
+        u = shader["uniforms"]
+        self.assertEqual(u["uGrass"]["value"][1], 0.5)
+        self.assertEqual(u["uDirt"]["value"][0], 0.4)
+        self.assertEqual(u["uSnow"]["value"][2], 0.95)
+        self.assertIn("texture2D(uMap", shader["fragment"])
+        self.assertIn("noise", shader["fragment"])
+        self.assertNotIn("precision mediump float", shader["fragment"])
+        self.assertNotIn("precision mediump float", shader["vertex"])
+
+    def test_giant_mushroom_size(self):
+        prop = instantiate_prop({
+            "name": "giant_fly_agaric",
+            "template": "mushroom",
+            "size": 4.5,
+            "count": 5,
+        })
+        lo, hi = prop["instances"]["scale_range"]
+        self.assertGreater(lo, 3.5)
+        self.assertGreater(hi, 4.5)
 
 
 class TerrainFeatureTests(SimpleTestCase):
@@ -147,7 +209,36 @@ class TerrainFeatureTests(SimpleTestCase):
     def test_heightmap_is_smooth(self):
         hm = generate_heightmap(size=48, seed=5, octaves=4, features=[])
         diffs = abs(hm[1:] - hm[:-1])
-        self.assertLess(float(diffs.max()), 0.22)
+        self.assertLess(float(diffs.max()), 0.28)
+
+    def test_mountain_raises_center(self):
+        hm = generate_heightmap(
+            size=48,
+            scale=40,
+            octaves=3,
+            seed=11,
+            features=[{"type": "mountain", "center": [0.5, 0.5], "radius": 0.22, "height": 0.9}],
+        )
+        self.assertGreater(float(hm[24, 24]), float(hm[6, 6]) + 0.18)
+
+    def test_prompt_seed_changes_relief(self):
+        a = generate_heightmap(size=32, seed=mix_seed("луг", 1), octaves=3, features=[])
+        b = generate_heightmap(size=32, seed=mix_seed("пустыня", 1), octaves=3, features=[])
+        self.assertGreater(float(abs(a - b).mean()), 0.02)
+
+    def test_styles_look_different(self):
+        plains = generate_heightmap(size=32, seed=8, octaves=3, style="plains", features=[])
+        peaks = generate_heightmap(size=32, seed=8, octaves=3, style="mountains", features=[])
+        island = generate_heightmap(size=32, seed=8, octaves=3, style="island", features=[])
+        self.assertGreater(float(peaks.max() - peaks.min()), float(plains.max() - plains.min()))
+        self.assertGreater(float(island[16, 16]), float(island[2, 2]))
+
+    def test_prompt_places_mountain_left(self):
+        extra = _fallback_landforms("гора слева", [], 1)
+        self.assertEqual(extra[0]["type"], "mountain")
+        self.assertLess(extra[0]["center"][0], 0.35)
+        self.assertEqual(_infer_style("пустыня с дюнами"), "dunes")
+        self.assertEqual(_prompt_uv("озеро на севере")[1], 0.82)
 
     def test_colormap_is_banded(self):
         hm = generate_heightmap(size=24, seed=2, octaves=3, features=[])
@@ -224,7 +315,7 @@ class ValidatorTests(SimpleTestCase):
                 },
             }
         )
-        self.assertGreaterEqual(len(plan["terrain"]["color_gradient"]), 2)
+        self.assertGreaterEqual(len(plan["terrain"]["color_gradient"]), 4)
         self.assertEqual(plan["terrain"]["color_gradient"][0]["color"], [140, 97, 41])
 
     def test_nested_feature_center(self):

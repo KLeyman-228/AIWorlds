@@ -58,30 +58,44 @@ JSON_RETRY_HINT = (
 METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dota/Civ3). Верни ТОЛЬКО компактный JSON.
 
 Схема:
-{"n":"имя","d":"1 фраза","t":{"sc":45,"oc":4,"sd":42,"w":0.18,"g":[[0,[30,90,40]],[1,[90,70,40]]],"f":[["rv",[[0.1,0.4],[0.9,0.55]],0.05,0.4]]},"tm":{"grass":[0.18,0.46,0.12],"dirt":[0.28,0.20,0.10],"rock":[0.40,0.38,0.34]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[["oak","veg",10,"fr","oak",{"bark":[0.32,0.18,0.08],"leaf":[0.18,0.5,0.12],"size":1.0}]],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
+{"n":"имя","d":"1 фраза","t":{"st":"hills","sc":34,"oc":3,"sd":917,"amp":1.0,"w":0.14,"g":[[0,[90,80,40]],[0.4,[40,110,40]],[1,[130,120,110]]],"f":[{"k":"md","c":[0.22,0.7],"r":0.16,"h":0.4}]},"tm":{"grass":[0.18,0.46,0.12],"dirt":[0.32,0.22,0.10],"rock":[0.42,0.40,0.36],"snow":[0.82,0.84,0.86]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"oak","c":"veg","k":22,"d":"fr","t":"oak","p":{"bark":[0.32,0.18,0.08],"leaf":[0.18,0.5,0.12],"size":1.0}}],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
 
-Ключи: n имя, d описание, t террейн, tm цвета ландшафта, a атмосфера, p пропы, pp постпроцесс.
-t.w вода 0.12-0.22. t.g 6 ретро-ступеней. t.f: rv река, lk озеро.
-tm: grass/dirt/rock 0-1. ts (кастомный fragment ландшафта) пиши ТОЛЬКО если биом нельзя описать tm (лава, снег, кристалл). Иначе tm хватает.
-Заготовки пропов: oak, birch, pine, bush, boulder, stone, flower, mushroom, crystal, ruin, hay, cactus.
-p элемент: [id, cat, count, dist, tpl, params]. tpl = oak|birch|pine|bush|boulder|stone|flower|mushroom|crystal|ruin|hay|cactus ИЛИ "x" если нужен кастомный меш/шейдер.
-params: size 0.6-1.6, em 0-1.5 (свечение, 0 по умолчанию). дерево: bark, leaf. камень/руина: rock. цветок: petal, stem. гриб: cap, stem. кристалл: crystal + em. стог: hay.
-Кастом (tpl=x) только если заготовки не хватает (мост, статуя, уникальный меш). Для свечения не нужен custom — ставь em.
-a.td day, sk голубой. 4-6 пропов count<=14. Не делай проп-поляну.
-JSON компактный, без markdown.
+Ключи: n имя, d описание, t террейн, tm палитра, a атмосфера, p пропы-ОБЪЕКТЫ, pp постпроцесс.
+p объект {n,c,k,d,t,p}. c=veg|str|rk|un|mag|dec. d=sc|fr|cl|rv. t шаблон или "x" (дом/мост/статуя).
+Шаблоны: oak birch pine fir bush boulder stone flower mushroom crystal ruin hay cactus.
+t="x" ТОЛЬКО дом/мост/статуя. Цвет дерева в p.leaf, не новый шаблон. Синие деревья: t:"oak" p.leaf:[0.15,0.35,0.95]. Glow: p.em 0.8-1.4.
+
+КАРТА — ГЛАВНОЕ. Скульпт строго по словам промпта, НЕ копируй пример и НЕ ставь гору в центр по умолчанию.
+UV: [0,0] ЮЗ, [0.5,0.5] центр, [1,0] ЮВ, [0,1] СЗ, [1,1] СВ.
+«слева/запад» u=0.18  «справа/восток» u=0.82  «север» v=0.82  «юг» v=0.18  «центр» 0.5,0.5
+«в углу» = один из [0.18,0.18]|[0.82,0.18]|[0.18,0.82]|[0.82,0.82]
+
+t.st стиль базы, ОБЯЗАТЕЛЬНО один:
+plains равнина  hills холмы  mountains гряды  canyon каньон  valley долина  island остров  dunes дюны  crater кратер
+Луг/поле=plains. Пустыня=dunes. Горы/альпы=mountains. Остров=island. Каньон/ущелье=canyon. Кратер=crater.
+t.amp 0.5-1.6 (горы 1.2-1.6, равнина 0.5-0.8). t.sc 18-80. t.sd уникальный.
+
+t.f 2-5 фич, координаты СМЕЩЕНЫ, не все в центре.
+k: mt гора {c:[u,v],r,h,aspect,rot}  md холм  pl плато {c,r,h}
+   rd хребет {pts:[[u,v]...],w,h}  cn каньон {pts,w,dp}  vl долина {pts,w,dp}
+   rv река {pts,w,dp}  lk озеро {c,r,dp}  bs впадина  cr кратер {c,r,dp,h}
+«гора в центре» → st:mountains + {"k":"mt","c":[0.5,0.5],"r":0.24,"h":0.95}
+«холмы слева» → st:hills + md c:[0.2,0.5]
+«хребет с севера на юг» → rd pts:[[0.5,0.08],[0.52,0.5],[0.48,0.92]]
+«река через карту» → rv pts от края до края. Вода ТОЛЬКО если в промпте есть река/озеро/пруд.
+Гора h=0.75-1.1 r=0.16-0.3. Холм h=0.22-0.5. Каньон dp=0.45-0.75 w=0.08-0.16.
+
+t.g градиент 0-255 под биом. tm grass,dirt,rock,snow 0-1.
+a.td day. 5-8 пропов. Лес/поляна ОБЯЗАТЕЛЬНО густо: деревья k=20-32, кусты 16-28, цветы 24-40, камни 10-18. Дом k=1. Не ставь k=8. JSON без markdown.
 """
 
-PROP_SYSTEM_PROMPT = r"""Ретро-RTS теххудожник. Один проп. ТОЛЬКО компактный JSON.
+PROP_SYSTEM_PROMPT = r"""Ретро-RTS теххудожник. Painted-pixel как Warcraft 3. Один КАСТОМНЫЙ проп. ТОЛЬКО компактный JSON.
 
-{"n":"oak","g":[["cyl",[0.12,0.18,1.4,6],[0,0.7,0]],["sph",[0.7,6,4],[0,1.7,0]],["sph",[0.5,6,4],[0.35,1.5,0.1]]],"fs":["varying vec3 vPosition;","varying vec3 vNormal;","void main(){ float b=step(0.5,fract(vPosition.y*8.0)); vec3 c=mix(vec3(0.28,0.16,0.08),vec3(0.42,0.26,0.12),b); gl_FragColor=vec4(c,1.0); }"],"ls":["varying vec2 vUv;","varying vec3 vNormal;","void main(){ float n=fract(sin(dot(floor(vUv*12.0),vec2(12.9,78.2)))*43758.5); vec3 c=mix(vec3(0.10,0.34,0.08),vec3(0.22,0.58,0.14),step(0.45,n)); gl_FragColor=vec4(c,1.0); }"],"lv":["varying vec2 vUv;","varying vec3 vNormal;","varying vec3 vPosition;","uniform float uTime;","void main(){ vUv=uv; vNormal=normalize(normalMatrix*normal); vec3 p=position; p.x+=sin(uTime*1.6+position.y*3.0)*0.05; p.z+=cos(uTime*1.2+position.x*2.0)*0.04; vPosition=p; vec4 wp=modelMatrix*vec4(p,1.0); gl_Position=projectionMatrix*viewMatrix*wp; }"],"u":{"uBark":[0.32,0.18,0.08]},"i":[8,"fr",[0.8,1.2]]}
+{"n":"cottage","g":[["box",[1.5,1.0,1.3],[0,0.5,0]],["con",[1.1,0.8,4],[0,1.35,0]],["box",[0.28,0.55,0.08],[0,0.35,0.66]],["box",[0.22,0.22,0.06],[0.38,0.72,0.66]],["cyl",[0.08,0.1,0.4,6],[0.45,1.5,-0.2]]],"fs":["varying vec3 vPosition;","varying vec3 vNormal;","float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5);}","float n2(vec2 p){vec2 i=floor(p);vec2 f=fract(p);f=f*f*(3.0-2.0*f);return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),f.x),mix(hash(i+vec2(0.0,1.0)),hash(i+vec2(1.0,1.0)),f.x),f.y);}","void main(){ vec3 n=normalize(vNormal); float pl=step(0.5,fract(vPosition.y*7.0+n2(vPosition.xz*2.0)*0.2)); vec3 wood=mix(vec3(0.42,0.24,0.10),vec3(0.62,0.38,0.16),pl); float roof=step(1.05,vPosition.y); vec3 c=mix(wood,mix(vec3(0.55,0.16,0.12),vec3(0.72,0.24,0.14),fract(vPosition.x*5.0)),roof); float wrap=max(dot(n,normalize(vec3(0.46,0.84,0.26))),0.0)*0.62+0.38; float band=floor(wrap*5.0+0.35)/5.0; c*=mix(vec3(0.58,0.68,0.88),vec3(1.06,0.97,0.84),mix(wrap,band,0.55)); c=floor(c*20.0+0.5)/20.0; gl_FragColor=vec4(c,1.0); }"],"u":{"uA":[0.52,0.30,0.12]},"i":[1,"cl",[1.0,1.15]]}
 
-g: 3-6 малых примитивов. Дерево: cyl ствол + sph/con крона. ЗАПРЕЩЕНО plane и огромные box.
-Для ДЕРЕВА обязательно два материала, 24-40 строк каждый:
-fs = КОРА: вертикальные трещины, чешуйки, тёмные борозды, мох снизу (vPosition.y). Матовая. БЕЗ fresnel/gloss/sin(uTime) в цвете.
-ls = ЛИСТВА: 2-3 октавы hash по UV/world, комочки листьев, тёмные дырки между ними, 3 оттенка зелени. Матовая. БЕЗ fresnel и БЕЗ пульса цвета.
-lv = vertex листвы: качай position через sin/cos(uTime), амплитуда 0.03-0.07. Цвет во fragment НЕ от uTime.
-Камень: трещины+мох+зерно. Цветок: стебель/лепесток разными hash. i count<=14.
-i count<=14. JSON валидный, шейдеры массивом строк, не обрезай.
+g: 4-6 примитивов. Дом: box + крыша + дверь + окно + труба. Низ у y=0.
+fs: painted pixel. Шум fbm/noise по world pos, мягкий wrap-light + лёгкие 5 полос, палитра floor(c*20)/20. Тёплый свет. БЕЗ pow(vec3), БЕЗ fresnel, БЕЗ gl_FragCoord dither. varying vPosition vNormal.
+ls/lv только для кроны. i для дома=1. JSON валидный.
 """
 
 _http_timeout = httpx.Timeout(600.0, connect=10.0)
@@ -265,13 +279,54 @@ PRIM_ALIAS = {
 }
 FEAT_ALIAS = {
     "rv": "river",
+    "river": "river",
     "lk": "lake",
+    "lake": "lake",
     "bs": "basin",
+    "basin": "basin",
     "rd": "ridge",
+    "ridge": "ridge",
     "pl": "plateau",
+    "plateau": "plateau",
     "md": "mound",
+    "mound": "mound",
+    "hill": "mound",
+    "mt": "mountain",
+    "mountain": "mountain",
+    "peak": "mountain",
+    "гора": "mountain",
+    "холм": "mound",
+    "cn": "canyon",
+    "canyon": "canyon",
+    "каньон": "canyon",
+    "vl": "valley",
+    "valley": "valley",
+    "долина": "valley",
+    "cr": "crater",
+    "crater": "crater",
+    "кратер": "crater",
 }
-DIST_ALIAS = {"sc": "scattered", "fr": "forest", "cl": "cluster", "rv": "river_line"}
+STYLE_ALIAS = {
+    "plains": "plains", "plain": "plains", "равнина": "plains", "луг": "plains",
+    "hills": "hills", "hill": "hills", "холмы": "hills",
+    "mountains": "mountains", "mountain": "mountains", "горы": "mountains",
+    "canyon": "canyon", "каньон": "canyon",
+    "valley": "valley", "долина": "valley",
+    "island": "island", "остров": "island",
+    "dunes": "dunes", "desert": "dunes", "пустыня": "dunes", "дюны": "dunes",
+    "crater": "crater", "кратер": "crater",
+}
+DIST_ALIAS = {
+    "sc": "scattered",
+    "fr": "forest",
+    "cl": "cluster",
+    "rv": "river_line",
+    "scattered": "scattered",
+    "forest": "forest",
+    "cluster": "cluster",
+    "river_line": "river_line",
+}
+VALID_DISTS = set(DIST_ALIAS.values())
 CAT_ALIAS = {
     "veg": "vegetation",
     "str": "structure",
@@ -279,6 +334,12 @@ CAT_ALIAS = {
     "un": "unit_prop",
     "mag": "magic",
     "dec": "decoration",
+    "vegetation": "vegetation",
+    "structure": "structure",
+    "rock": "rock",
+    "unit_prop": "unit_prop",
+    "magic": "magic",
+    "decoration": "decoration",
 }
 PRIM_PARAMS = {
     "box": ("width", "height", "depth"),
@@ -309,23 +370,13 @@ def _expand_metadata(data: dict) -> dict:
     props = []
     for item in data.get("p") or []:
         if isinstance(item, (list, tuple)) and len(item) >= 3:
-            dist = DIST_ALIAS.get(str(item[3]), item[3]) if len(item) > 3 else "scattered"
-            entry = {
-                "name": item[0],
-                "category": CAT_ALIAS.get(str(item[1]), item[1]),
-                "count": int(item[2]),
-                "distribution": dist,
-            }
-            if len(item) > 4 and item[4] not in (None, ""):
-                entry["template"] = item[4]
-            if len(item) > 5 and isinstance(item[5], dict):
-                entry["params"] = item[5]
-                for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss", "em", "cap", "crystal", "hay"):
-                    if key in item[5]:
-                        entry[key] = item[5][key]
-            props.append(entry)
+            parsed = _parse_prop_row(item)
+            if parsed:
+                props.append(parsed)
         elif isinstance(item, dict):
-            props.append(item)
+            parsed = _parse_prop_obj(item)
+            if parsed:
+                props.append(parsed)
     gradient = []
     for stop in terrain.get("g") or []:
         if isinstance(stop, (list, tuple)) and len(stop) >= 2:
@@ -352,6 +403,8 @@ def _expand_metadata(data: dict) -> dict:
             "scale": terrain.get("sc", terrain.get("scale", 45)),
             "octaves": terrain.get("oc", terrain.get("octaves", 4)),
             "seed": terrain.get("sd", terrain.get("seed", 42)),
+            "style": STYLE_ALIAS.get(str(terrain.get("st") or terrain.get("style") or "hills").lower(), "hills"),
+            "amplitude": terrain.get("amp", terrain.get("amplitude", 1.0)),
             "water_level": terrain.get("w", terrain.get("water_level")),
             "color_gradient": gradient or terrain.get("color_gradient"),
             "features": features or terrain.get("features") or [],
@@ -372,31 +425,125 @@ def _expand_metadata(data: dict) -> dict:
     }
 
 
+def _parse_prop_row(item) -> dict | None:
+    """[id, cat, count, dist, tpl, params] с устойчивостью к сдвигу полей."""
+    name = item[0]
+    rest = list(item[1:])
+    category = "decoration"
+    count = 18
+    dist = "scattered"
+    template = None
+    params = {}
+
+    if rest and isinstance(rest[0], str) and str(rest[0]).lower() in CAT_ALIAS:
+        category = CAT_ALIAS[str(rest.pop(0)).lower()]
+    if rest:
+        try:
+            count = int(rest[0])
+            rest.pop(0)
+        except (TypeError, ValueError):
+            pass
+    if rest and isinstance(rest[0], str) and str(rest[0]).lower() in DIST_ALIAS:
+        dist = DIST_ALIAS[str(rest.pop(0)).lower()]
+    elif rest and isinstance(rest[0], str) and str(rest[0]).lower() in CAT_ALIAS:
+        rest.pop(0)
+    if rest and isinstance(rest[0], str):
+        template = rest.pop(0)
+    if rest and isinstance(rest[0], dict):
+        params = rest[0]
+
+    if dist not in VALID_DISTS:
+        dist = "scattered"
+    entry = {
+        "name": name,
+        "category": category,
+        "count": count,
+        "distribution": dist,
+    }
+    if template not in (None, ""):
+        entry["template"] = template
+    if params:
+        entry["params"] = params
+        for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss", "em", "cap", "crystal", "hay"):
+            if key in params:
+                entry[key] = params[key]
+    return entry
+
+
+def _parse_prop_obj(item: dict) -> dict | None:
+    name = item.get("n") or item.get("name")
+    if not name:
+        return None
+    cat_raw = str(item.get("c") or item.get("category") or "dec").lower()
+    dist_raw = str(item.get("d") or item.get("distribution") or "sc").lower()
+    try:
+        count = int(item.get("k") if item.get("k") is not None else item.get("count") or 14)
+    except (TypeError, ValueError):
+        count = 14
+    template = item.get("t") or item.get("template") or item.get("tpl")
+    params = item.get("p") if isinstance(item.get("p"), dict) else item.get("params") or {}
+    dist = DIST_ALIAS.get(dist_raw, "scattered")
+    if dist not in VALID_DISTS:
+        dist = "scattered"
+    entry = {
+        "name": name,
+        "category": CAT_ALIAS.get(cat_raw, "decoration"),
+        "count": count,
+        "distribution": dist,
+    }
+    if template not in (None, ""):
+        entry["template"] = template
+    if params:
+        entry["params"] = params
+        for key in ("bark", "leaf", "rock", "petal", "stem", "size", "moss", "em", "cap", "crystal", "hay"):
+            if key in params:
+                entry[key] = params[key]
+    return entry
+
+
 def _expand_feature(feat):
     if isinstance(feat, dict):
-        kind = FEAT_ALIAS.get(str(feat.get("type") or ""), feat.get("type"))
-        if kind:
-            feat = dict(feat)
-            feat["type"] = kind
-        return feat
+        kind = FEAT_ALIAS.get(str(feat.get("k") or feat.get("type") or ""), feat.get("type") or feat.get("k"))
+        if not kind:
+            return None
+        item = {"type": kind}
+        if kind in ("river", "ridge", "canyon", "valley"):
+            item["points"] = feat.get("pts") or feat.get("points") or []
+            item["width"] = feat.get("w", feat.get("width", 0.1 if kind in ("canyon", "valley") else 0.05))
+            if kind in ("river", "canyon", "valley"):
+                item["depth"] = feat.get("dp", feat.get("depth", 0.5 if kind != "river" else 0.4))
+            else:
+                item["height"] = feat.get("h", feat.get("height", 0.45))
+        else:
+            item["center"] = feat.get("c") or feat.get("center") or [0.5, 0.5]
+            item["radius"] = feat.get("r", feat.get("radius", 0.18 if kind in ("mountain", "crater") else 0.12))
+            if kind in ("lake", "basin", "crater"):
+                item["depth"] = feat.get("dp", feat.get("depth", 0.4))
+            if kind not in ("lake", "basin"):
+                item["height"] = feat.get("h", feat.get("height", 0.85 if kind == "mountain" else 0.32))
+            if feat.get("aspect") is not None:
+                item["aspect"] = feat.get("aspect")
+            if feat.get("rot") is not None:
+                item["rot"] = feat.get("rot")
+        return item
     if not isinstance(feat, (list, tuple)) or not feat:
         return None
     kind = FEAT_ALIAS.get(str(feat[0]), feat[0])
     item = {"type": kind}
-    if kind in ("river", "ridge"):
+    if kind in ("river", "ridge", "canyon", "valley"):
         item["points"] = feat[1] if len(feat) > 1 else []
         item["width"] = feat[2] if len(feat) > 2 else 0.05
-        if kind == "river":
-            item["depth"] = feat[3] if len(feat) > 3 else 0.4
+        if kind in ("river", "canyon", "valley"):
+            item["depth"] = feat[3] if len(feat) > 3 else 0.45
         else:
             item["height"] = feat[3] if len(feat) > 3 else 0.35
     else:
         item["center"] = feat[1] if len(feat) > 1 else [0.5, 0.5]
-        item["radius"] = feat[2] if len(feat) > 2 else 0.12
-        if kind in ("lake", "basin"):
+        item["radius"] = feat[2] if len(feat) > 2 else (0.2 if kind == "mountain" else 0.12)
+        if kind in ("lake", "basin", "crater"):
             item["depth"] = feat[3] if len(feat) > 3 else 0.35
-        else:
-            item["height"] = feat[3] if len(feat) > 3 else 0.3
+        if kind not in ("lake", "basin"):
+            item["height"] = feat[3] if len(feat) > 3 else (0.8 if kind == "mountain" else 0.35)
     return item
 
 
@@ -424,7 +571,7 @@ def _expand_prop(data: dict) -> dict:
             "scale_range": inst[2] if len(inst) > 2 else [0.8, 1.2],
         }
     else:
-        instances = inst if isinstance(inst, dict) else {"count": 8, "distribution": "scattered"}
+        instances = inst if isinstance(inst, dict) else {"count": 18, "distribution": "scattered"}
     fs = data.get("fs") or data.get("fragment_lines")
     ls = data.get("ls")
     lv = data.get("lv")
@@ -584,7 +731,8 @@ def generate_world_metadata(user_prompt: str, model: str | None = None) -> dict:
     chosen = model or MODEL
     user = (
         f"prompt:{user_prompt.strip()}\n"
-        "Prefer templates oak/birch/pine/bush/boulder/flower. custom tpl=x only if needed."
+        "Sculpt THIS prompt: pick t.st, place t.f with exact UV from words (left/right/north/south/center). "
+        "Do not copy the sample mountain. p objects {n,c,k,d,t,p}. Unique t.sd. House t=x. Water only if prompt has water."
     )
     data = _chat(METADATA_SYSTEM_PROMPT, user, chosen, METADATA_MAX_TOKENS, "metadata")
     if not data.get("prop_list"):
@@ -607,20 +755,33 @@ def generate_prop(user_prompt: str, world_meta: dict, prop_spec: dict, model: st
         f"world:{world_meta.get('world_name')}\n"
         f"prompt:{user_prompt.strip()}\n"
         f"prop:{json.dumps(spec, ensure_ascii=False)}\n"
-        "compact JSON, keep fs shader lines full."
+        "Build a unique mesh+material for THIS object. If house: walls+roof+door+window. Full fs shader."
     )
     n_props = max(1, len(world_meta.get("prop_list") or []))
-    prop_tokens = max(2500, (SCENE_MAX_TOKENS - METADATA_MAX_TOKENS) // n_props)
+    prop_tokens = max(3500, (SCENE_MAX_TOKENS - METADATA_MAX_TOKENS) // n_props)
     data = _chat(PROP_SYSTEM_PROMPT, user, chosen, prop_tokens, f"prop:{prop_spec.get('name')}")
     name = data.get("name") or prop_spec.get("name")
     data["name"] = name
     primitives = (data.get("geometry") or {}).get("primitives") or []
+    shader = data.setdefault("shader", {})
+    fragment = (shader.get("fragment") or "").strip()
     if len(primitives) < 3:
         raise AIGenerationError(f"Проп {name}: нужно 3-6 примитивов, получено {len(primitives)}")
-    fragment = (data.get("shader") or {}).get("fragment") or ""
-    if len(fragment.strip()) < 40:
-        raise AIGenerationError(f"Проп {name}: пустой или слишком короткий fragment shader")
-    shader = data.setdefault("shader", {})
+    if len(fragment) < 40:
+        shader["fragment"] = (
+            "varying vec3 vPosition;\n"
+            "varying vec3 vNormal;\n"
+            "void main(){\n"
+            "  vec3 n=normalize(vNormal);\n"
+            "  float pl=step(0.5,fract(vPosition.y*8.0));\n"
+            "  vec3 wood=mix(vec3(0.32,0.18,0.08),vec3(0.50,0.30,0.14),pl);\n"
+            "  float roof=step(1.0,vPosition.y);\n"
+            "  vec3 c=mix(wood,vec3(0.42,0.16,0.12),roof);\n"
+            "  c*=0.55+0.45*max(dot(n,normalize(vec3(0.4,0.85,0.2))),0.0);\n"
+            "  gl_FragColor=vec4(c,1.0);\n"
+            "}"
+        )
+        log.warning("Custom prop %s: shader padded, mesh kept", name)
     if not (shader.get("vertex") or "").strip():
         shader["vertex"] = STANDARD_VERTEX_SHADER
     return data
@@ -633,7 +794,7 @@ def generate_props_parallel(
     max_workers: int = 2,
 ) -> dict:
     """Шаблоны копируются сразу. Кастомные пропы генерируются параллельно."""
-    from .templates import instantiate_prop, wants_custom
+    from .templates import instantiate_prop, tint_spec_from_prompt, wants_custom
 
     prop_list = world_meta["prop_list"][:8]
     props = {}
@@ -643,6 +804,7 @@ def generate_props_parallel(
 
     for spec in prop_list:
         name = spec.get("name", "?")
+        spec = tint_spec_from_prompt(spec, user_prompt)
         if not wants_custom(spec):
             try:
                 prop = instantiate_prop(spec)
@@ -668,7 +830,7 @@ def generate_props_parallel(
                     props[prop["name"]] = prop
                     log.info("Prop ready: %s", prop["name"])
                 except Exception as exc:
-                    log.exception("Prop failed: %s", name)
+                    log.warning("Custom prop failed %s: %s", name, exc)
                     errors.append(f"{name}: {exc}")
 
     elapsed = time.perf_counter() - started
