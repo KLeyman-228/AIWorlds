@@ -290,69 +290,7 @@ scene.add(fillLight);
 const worldGroup = new THREE.Group();
 scene.add(worldGroup);
 
-const skyUniforms = {{
-  uTime: {{ value: 0 }},
-  uSkyTop: {{ value: new THREE.Color(0.45, 0.72, 0.98) }},
-  uSkyHorizon: {{ value: new THREE.Color(0.78, 0.88, 0.98) }},
-  uCloud: {{ value: new THREE.Color(0.95, 0.97, 1.0) }},
-}};
-const skyMat = new THREE.ShaderMaterial({{
-  uniforms: skyUniforms,
-  side: THREE.BackSide,
-  depthWrite: false,
-  fog: false,
-  vertexShader: `
-    varying vec3 vDir;
-    void main() {{
-      vDir = position;
-      vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      gl_Position = clip.xyww;
-    }}
-  `,
-  fragmentShader: `
-    uniform float uTime;
-    uniform vec3 uSkyTop;
-    uniform vec3 uSkyHorizon;
-    uniform vec3 uCloud;
-    varying vec3 vDir;
-    float hash(vec2 p) {{
-      return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-    }}
-    float noise(vec2 p) {{
-      vec2 i = floor(p);
-      vec2 f = fract(p);
-      float a = hash(i);
-      float b = hash(i + vec2(1.0, 0.0));
-      float c = hash(i + vec2(0.0, 1.0));
-      float d = hash(i + vec2(1.0, 1.0));
-      vec2 u = f * f * (3.0 - 2.0 * f);
-      return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
-    }}
-    float fbm(vec2 p) {{
-      float v = 0.0;
-      float a = 0.5;
-      for (int i = 0; i < 5; i++) {{
-        v += a * noise(p);
-        p *= 2.03;
-        a *= 0.5;
-      }}
-      return v;
-    }}
-    void main() {{
-      vec3 dir = normalize(vDir);
-      float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
-      vec3 col = mix(uSkyHorizon, uSkyTop, pow(h, 0.65));
-      vec2 uv = dir.xz / max(dir.y + 0.25, 0.05);
-      float clouds = fbm(uv * 1.6 + vec2(uTime * 0.012, 0.0));
-      clouds = smoothstep(0.52, 0.78, clouds) * smoothstep(0.02, 0.28, dir.y);
-      col = mix(col, uCloud, clouds * 0.85);
-      gl_FragColor = vec4(col, 1.0);
-    }}
-  `,
-}});
-const sky = new THREE.Mesh(new THREE.SphereGeometry(160, 24, 16), skyMat);
-sky.renderOrder = -1;
-scene.add(sky);
+{sky_block}
 
 // ============================================================
 // ЛАНДШАФТ
@@ -618,6 +556,43 @@ console.log('✅ World loaded: ' + WORLD_NAME);
 # ГЛАВНАЯ ФУНКЦИЯ
 # ============================================================
 
+DEFAULT_SKY_VERTEX = """varying vec3 vDir;
+void main() {
+  vDir = position;
+  vec4 clip = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  gl_Position = clip.xyww;
+}"""
+
+DEFAULT_SKY_FRAGMENT = """uniform float uTime;
+uniform vec3 uSkyTop;
+uniform vec3 uSkyHorizon;
+uniform vec3 uCloud;
+varying vec3 vDir;
+float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float noise(vec2 p){
+  vec2 i = floor(p); vec2 f = fract(p);
+  float a = hash(i); float b = hash(i + vec2(1.0, 0.0));
+  float c = hash(i + vec2(0.0, 1.0)); float d = hash(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+float fbm(vec2 p){
+  float v = 0.0; float a = 0.5;
+  for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.03; a *= 0.5; }
+  return v;
+}
+void main() {
+  vec3 dir = normalize(vDir);
+  float h = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);
+  vec3 col = mix(uSkyHorizon, uSkyTop, pow(h, 0.65));
+  vec2 uv = dir.xz / max(dir.y + 0.25, 0.05);
+  float clouds = fbm(uv * 1.6 + vec2(uTime * 0.012, 0.0));
+  clouds = smoothstep(0.52, 0.78, clouds) * smoothstep(0.02, 0.28, dir.y);
+  col = mix(col, uCloud, clouds * 0.85);
+  gl_FragColor = vec4(col, 1.0);
+}"""
+
+
 def transpile_to_js(plan: dict, heightmap_b64: str = "", colormap_b64: str = "", heightmap_js: str = "[]") -> str:
     """
     Принимает JSON-план мира + base64-карты и возвращает готовый JS-код.
@@ -637,6 +612,7 @@ def transpile_to_js(plan: dict, heightmap_b64: str = "", colormap_b64: str = "",
             plan.get('description', ''), ensure_ascii=False
         ),
         atmosphere_json=json.dumps(plan['atmosphere'], indent=2),
+        sky_block=_build_sky_block(plan.get("atmosphere") or {}),
     ))
 
     # --- Terrain ---
@@ -771,6 +747,66 @@ def transpile_to_js(plan: dict, heightmap_b64: str = "", colormap_b64: str = "",
 # ============================================================
 
 def _vec3_uniform(cfg, fallback):
+    if isinstance(cfg, dict):
+        val = cfg.get("value")
+        if isinstance(val, (list, tuple)) and len(val) >= 3:
+            nums = [float(val[0]), float(val[1]), float(val[2])]
+            if max(nums) > 1.5:
+                nums = [n / 255.0 for n in nums]
+            return nums
+    return list(fallback)
+
+
+def _rgb01_from_255(value, fallback):
+    if isinstance(value, (list, tuple)) and len(value) >= 3:
+        try:
+            nums = [float(value[0]), float(value[1]), float(value[2])]
+            if max(nums) > 1.5:
+                nums = [n / 255.0 for n in nums]
+            return [max(0.0, min(1.0, n)) for n in nums]
+        except (TypeError, ValueError):
+            pass
+    return list(fallback)
+
+
+def _build_sky_block(atmo: dict) -> str:
+    top = _rgb01_from_255(atmo.get("sky_color"), [0.45, 0.72, 0.98])
+    horizon = _rgb01_from_255(atmo.get("horizon_color"), [0.78, 0.88, 0.98])
+    cloud = _rgb01_from_255(atmo.get("cloud_color"), [0.95, 0.97, 1.0])
+    mode = str(atmo.get("sky_mode") or "default").lower()
+    shader = atmo.get("sky_shader") if isinstance(atmo.get("sky_shader"), dict) else {}
+    fragment = (shader.get("fragment") or "").strip()
+    vertex = (shader.get("vertex") or "").strip() or DEFAULT_SKY_VERTEX
+    if mode == "custom" and "gl_FragColor" in fragment and "vDir" in fragment:
+        extra = {k: v for k, v in (shader.get("uniforms") or {}).items() if k not in ("uTime", "uSkyTop", "uSkyHorizon", "uCloud")}
+        extra_lines = _build_uniforms_lines(extra, ensure_time=False)
+        extra_js = (extra_lines + ",") if extra_lines else ""
+        frag_js = json.dumps(fragment, ensure_ascii=False)
+        vert_js = json.dumps(vertex, ensure_ascii=False)
+    else:
+        extra_js = ""
+        frag_js = json.dumps(DEFAULT_SKY_FRAGMENT, ensure_ascii=False)
+        vert_js = json.dumps(DEFAULT_SKY_VERTEX, ensure_ascii=False)
+    return f"""const skyUniforms = {{
+  uTime: {{ value: 0 }},
+  uSkyTop: {{ value: new THREE.Color({top[0]}, {top[1]}, {top[2]}) }},
+  uSkyHorizon: {{ value: new THREE.Color({horizon[0]}, {horizon[1]}, {horizon[2]}) }},
+  uCloud: {{ value: new THREE.Color({cloud[0]}, {cloud[1]}, {cloud[2]}) }},
+{extra_js}
+}};
+const skyMat = new THREE.ShaderMaterial({{
+  uniforms: skyUniforms,
+  side: THREE.BackSide,
+  depthWrite: false,
+  fog: false,
+  toneMapped: false,
+  vertexShader: {vert_js},
+  fragmentShader: {frag_js},
+}});
+const sky = new THREE.Mesh(new THREE.SphereGeometry(160, 24, 16), skyMat);
+sky.renderOrder = -1;
+scene.add(sky);
+"""
     if isinstance(cfg, dict):
         val = cfg.get("value")
         if isinstance(val, (list, tuple)) and len(val) >= 3:

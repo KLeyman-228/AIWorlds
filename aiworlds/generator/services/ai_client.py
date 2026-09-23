@@ -58,7 +58,7 @@ JSON_RETRY_HINT = (
 METADATA_SYSTEM_PROMPT = r"""Ретро-RTS артдиректор (Warcraft/Dota/Civ3). Верни ТОЛЬКО компактный JSON.
 
 Схема:
-{"n":"имя","d":"1 фраза","t":{"st":"hills","sc":34,"oc":3,"sd":917,"amp":1.0,"w":0.14,"g":[[0,[90,80,40]],[0.4,[40,110,40]],[1,[130,120,110]]],"f":[{"k":"md","c":[0.22,0.7],"r":0.16,"h":0.4}]},"tm":{"grass":[0.18,0.46,0.12],"dirt":[0.32,0.22,0.10],"rock":[0.42,0.40,0.36],"snow":[0.82,0.84,0.86]},"a":{"td":"day","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"oak","c":"veg","k":22,"d":"fr","t":"oak","p":{"bark":[0.32,0.18,0.08],"leaf":[0.18,0.5,0.12],"size":1.0}}],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
+{"n":"имя","d":"1 фраза","t":{"st":"hills","sc":34,"oc":3,"sd":917,"amp":1.0,"w":0.14,"g":[[0,[90,80,40]],[0.4,[40,110,40]],[1,[130,120,110]]],"f":[{"k":"md","c":[0.22,0.7],"r":0.16,"h":0.4}]},"tm":{"grass":[0.18,0.46,0.12],"dirt":[0.32,0.22,0.10],"rock":[0.42,0.40,0.36],"snow":[0.82,0.84,0.86]},"a":{"td":"day","sky":"def","fg":[170,200,230],"fd":0.01,"sk":[135,185,235],"hz":[199,224,250],"cl":[242,247,255],"su":[255,244,220],"am":[150,170,200]},"p":[{"n":"oak","c":"veg","k":22,"d":"fr","t":"oak","p":{"bark":[0.32,0.18,0.08],"leaf":[0.18,0.5,0.12],"size":1.0}}],"pp":["uniform sampler2D tDiffuse;","varying vec2 vUv;","void main(){ gl_FragColor=texture2D(tDiffuse,vUv);}"]}
 
 Ключи: n имя, d описание, t террейн, tm палитра, a атмосфера, p пропы-ОБЪЕКТЫ, pp постпроцесс.
 p объект {n,c,k,d,t,p}. c=veg|str|rk|un|mag|dec. d=sc|fr|cl|rv. t шаблон или "x" (дом/мост/статуя).
@@ -85,8 +85,13 @@ k: mt гора {c:[u,v],r,h,aspect,rot}  md холм  pl плато {c,r,h}
 «река через карту» → rv pts от края до края. Вода ТОЛЬКО если в промпте есть река/озеро/пруд.
 Гора h=0.75-1.1 r=0.16-0.3. Холм h=0.22-0.5. Каньон dp=0.45-0.75 w=0.08-0.16.
 
-t.g градиент 0-255 под биом. tm grass,dirt,rock,snow 0-1.
-a.td day. 5-8 пропов. Лес/поляна ОБЯЗАТЕЛЬНО густо: деревья k=20-32, кусты 16-28, цветы 24-40, камни 10-18. Дом k=1. Не ставь k=8. JSON без markdown.
+БИОМ ЕДИНЫЙ. Снежный лес: tm.grass/dirt/snow почти белые, ВСЕ деревья t:pine/fir, p.leaf белый [0.82,0.90,0.96], t.g снежный. Не мешай зелёные oak и белые fir.
+Пустыня: tm песочный, cactus/hay. Болото: тёмный mud/grass. Осень: рыжий leaf у всех деревьев.
+t.g градиент 0-255 под биом. tm grass,dirt,rock,snow 0-1 — ВСЕ слои под биом, не дефолтная зелень.
+НЕБО a.sky: "def" обычный день (НЕ пиши ss). "col" только цвет дефолтного купола: sk верх, hz горизонт, cl облака RGB 0-255. Ночь/закат = col + td night/sunset.
+"x" кастомный шейдер космоса/авроры/магии: ss массив строк fragment, varying vDir, uniforms uTime uSkyTop uSkyHorizon uCloud, gl_FragColor. Без шаблонов скайбоксов.
+День без космоса = def. Космос/планеты/звёзды = x.
+a.td day. 5-8 пропов. Лес густо: деревья k=20-32. Дом k=1. JSON без markdown.
 """
 
 PROP_SYSTEM_PROMPT = r"""Ретро-RTS теххудожник. Painted-pixel как Warcraft 3. Один КАСТОМНЫЙ проп. ТОЛЬКО компактный JSON.
@@ -396,6 +401,23 @@ def _expand_metadata(data: dict) -> dict:
         terrain_shader = {"fragment_lines": ts}
     elif isinstance(ts, str):
         terrain_shader = {"fragment": ts}
+    sky_mode = str(atmo.get("sky") or atmo.get("sky_mode") or "def").lower()
+    if sky_mode in ("x", "custom", "shader", "gen"):
+        sky_mode = "custom"
+    elif sky_mode in ("col", "color", "tint"):
+        sky_mode = "color"
+    else:
+        sky_mode = "default"
+    sky_shader = None
+    ss = data.get("ss") or atmo.get("ss") or atmo.get("sky_shader")
+    if isinstance(ss, list):
+        sky_shader = {"fragment_lines": ss}
+    elif isinstance(ss, str) and ss.strip():
+        sky_shader = {"fragment": ss}
+    elif isinstance(ss, dict):
+        sky_shader = ss
+    if sky_shader:
+        sky_mode = "custom"
     return {
         "world_name": data.get("n") or data.get("world_name"),
         "description": data.get("d") or data.get("description") or "",
@@ -417,8 +439,12 @@ def _expand_metadata(data: dict) -> dict:
             "fog_color": atmo.get("fg", atmo.get("fog_color")),
             "fog_density": atmo.get("fd", atmo.get("fog_density", 0.01)),
             "sky_color": atmo.get("sk", atmo.get("sky_color")),
+            "horizon_color": atmo.get("hz", atmo.get("horizon_color")),
+            "cloud_color": atmo.get("cl", atmo.get("cloud_color")),
             "sun_color": atmo.get("su", atmo.get("sun_color")),
             "ambient_color": atmo.get("am", atmo.get("ambient_color")),
+            "sky_mode": sky_mode,
+            "sky_shader": sky_shader,
         },
         "prop_list": props or data.get("prop_list") or [],
         "post_process": post,
@@ -656,6 +682,15 @@ def _normalize_shader_fields(data: dict) -> dict:
             post_shader["vertex"] = _join_shader_lines(post_shader.get("vertex_lines"))
         post["shader"] = post_shader
         data["post_process"] = post
+    atmo = data.get("atmosphere")
+    if isinstance(atmo, dict) and isinstance(atmo.get("sky_shader"), dict):
+        ssh = atmo["sky_shader"]
+        if not ssh.get("fragment"):
+            ssh["fragment"] = _join_shader_lines(ssh.get("fragment_lines"))
+        if not ssh.get("vertex"):
+            ssh["vertex"] = _join_shader_lines(ssh.get("vertex_lines"))
+        atmo["sky_shader"] = ssh
+        data["atmosphere"] = atmo
     return data
 
 
@@ -794,17 +829,18 @@ def generate_props_parallel(
     max_workers: int = 2,
 ) -> dict:
     """Шаблоны копируются сразу. Кастомные пропы генерируются параллельно."""
-    from .templates import instantiate_prop, tint_spec_from_prompt, wants_custom
+    from .templates import apply_palette_to_prop, infer_palette, instantiate_prop, wants_custom
 
     prop_list = world_meta["prop_list"][:8]
     props = {}
     errors = []
     custom_specs = []
     started = time.perf_counter()
+    palette = infer_palette(user_prompt)
 
     for spec in prop_list:
         name = spec.get("name", "?")
-        spec = tint_spec_from_prompt(spec, user_prompt)
+        spec = apply_palette_to_prop(spec, palette, user_prompt)
         if not wants_custom(spec):
             try:
                 prop = instantiate_prop(spec)

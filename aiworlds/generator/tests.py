@@ -3,7 +3,7 @@ from django.test import SimpleTestCase
 from generator.services.ai_client import _parse_json
 from generator.services.instances import place_instances
 from generator.services.scene_builder import _fallback_landforms, _infer_style, _prompt_uv
-from generator.services.templates import instantiate_prop, instantiate_terrain_shader, resolve_template_id, tint_spec_from_prompt, wants_custom
+from generator.services.templates import infer_palette, instantiate_prop, instantiate_terrain_shader, resolve_template_id, tint_spec_from_prompt, wants_custom
 from generator.services.terrain import apply_features, generate_color_map, generate_heightmap, mix_seed
 from generator.services.validator import PlanValidationError, validate_and_place_props, validate_plan, _ground_geometry
 
@@ -54,6 +54,13 @@ class JsonParseTests(SimpleTestCase):
         self.assertEqual(data["terrain"]["style"], "canyon")
         self.assertEqual(data["terrain"]["amplitude"], 1.3)
         self.assertEqual(data["terrain"]["features"][0]["type"], "canyon")
+
+    def test_expands_custom_sky(self):
+        data = _parse_json(
+            '{"n":"Orbit","d":"космос","t":{"sc":40,"oc":3,"sd":2,"w":0.1,"g":[[0,[10,10,20]],[1,[40,40,60]]],"f":[]},"a":{"td":"night","sky":"x","fg":[10,12,30],"fd":0.01,"sk":[8,10,28],"su":[180,190,255],"am":[40,50,80]},"ss":["varying vec3 vDir;","void main(){ vec3 d=normalize(vDir); gl_FragColor=vec4(d*0.2,1.0); }"],"p":[{"n":"crystal","c":"mag","k":4,"d":"sc","t":"crystal"}],"pp":["void main(){ gl_FragColor=vec4(1.0); }"]}'
+        )
+        self.assertEqual(data["atmosphere"]["sky_mode"], "custom")
+        self.assertIn("vDir", data["atmosphere"]["sky_shader"]["fragment"])
 
     def test_expands_terrain_shader_and_leaf(self):
         meta = _parse_json(
@@ -127,6 +134,9 @@ class TemplateTests(SimpleTestCase):
         self.assertFalse(wants_custom({"name": "blue_oak", "template": "blue_oak"}))
         tinted = tint_spec_from_prompt({"name": "oak", "template": "oak"}, "синие деревья")
         self.assertGreater(tinted["leaf"][2], 0.8)
+        snow = tint_spec_from_prompt({"name": "oak", "template": "oak"}, "снежный лес")
+        self.assertGreater(snow["leaf"][0], 0.7)
+        self.assertGreater(snow["leaf"][2], 0.7)
         self.assertFalse(wants_custom({"name": "oak", "template": "oak"}))
         self.assertTrue(wants_custom({"name": "crystal", "template": "x"}))
         self.assertTrue(wants_custom({"name": "cottage"}))
@@ -184,6 +194,13 @@ class TemplateTests(SimpleTestCase):
         self.assertIn("noise", shader["fragment"])
         self.assertNotIn("precision mediump float", shader["fragment"])
         self.assertNotIn("precision mediump float", shader["vertex"])
+
+    def test_snow_palette_is_white(self):
+        pal = infer_palette("снежный лес с елками")
+        self.assertEqual(pal["biome"], "snow")
+        self.assertGreater(pal["terrain"]["grass"][2], pal["terrain"]["grass"][1] - 0.05)
+        shader = instantiate_terrain_shader(pal["terrain"])
+        self.assertGreater(shader["uniforms"]["uGrass"]["value"][0], 0.7)
 
     def test_giant_mushroom_size(self):
         prop = instantiate_prop({
@@ -289,7 +306,39 @@ class ValidatorTests(SimpleTestCase):
             }
         )
         self.assertGreater(plan["atmosphere"]["sky_color"][2], plan["atmosphere"]["sky_color"][0])
+        self.assertEqual(plan["atmosphere"]["sky_mode"], "default")
         self.assertEqual(len(plan["terrain"]["features"]), 1)
+
+    def test_keeps_custom_sky_shader(self):
+        plan = validate_plan(
+            {
+                "world_name": "Orbit",
+                "terrain": {
+                    "scale": 40,
+                    "octaves": 3,
+                    "seed": 1,
+                    "color_gradient": [
+                        {"height": 0, "color": [10, 20, 30]},
+                        {"height": 1, "color": [40, 50, 60]},
+                    ],
+                    "features": [],
+                },
+                "atmosphere": {
+                    "fog_color": [10, 12, 30],
+                    "fog_density": 0.01,
+                    "sky_color": [8, 10, 40],
+                    "sun_color": [180, 190, 255],
+                    "ambient_color": [40, 50, 80],
+                    "time_of_day": "night",
+                    "sky_mode": "custom",
+                    "sky_shader": {
+                        "fragment": "varying vec3 vDir; void main(){ gl_FragColor=vec4(0.05,0.07,0.16,1.0); }"
+                    },
+                },
+            }
+        )
+        self.assertEqual(plan["atmosphere"]["sky_mode"], "custom")
+        self.assertIn("vDir", plan["atmosphere"]["sky_shader"]["fragment"])
 
     def test_gradient_from_material_when_missing(self):
         plan = validate_plan(

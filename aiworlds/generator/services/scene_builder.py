@@ -17,7 +17,7 @@ from .terrain import (
     heightmap_to_js_array,
     mix_seed,
 )
-from .templates import instantiate_terrain_shader
+from .templates import apply_palette_to_terrain, infer_palette, instantiate_terrain_shader
 from .validator import validate_and_place_props, validate_plan
 
 log = logging.getLogger(__name__)
@@ -45,11 +45,21 @@ def build_world_js(user_prompt: str, model: str | None = None, progress=None) ->
     meta["props"] = props
 
     plan = validate_plan(meta)
-    custom_terrain = ((plan.get("terrain") or {}).get("shader") or {}).get("fragment")
+    palette = infer_palette(user_prompt)
+    terrain = plan.setdefault("terrain", {})
+    terrain["material"] = apply_palette_to_terrain(terrain.get("material"), palette)
+    if palette.get("terrain") and palette["terrain"].get("gradient"):
+        terrain["color_gradient"] = list(palette["terrain"]["gradient"])
+    custom_terrain = (terrain.get("shader") or {}).get("fragment")
+    palette_shader = instantiate_terrain_shader(terrain.get("material"))
     if not custom_terrain:
-        plan["terrain"]["shader"] = instantiate_terrain_shader(
-            (plan.get("terrain") or {}).get("material")
-        )
+        terrain["shader"] = palette_shader
+    else:
+        shader = dict(terrain.get("shader") or {})
+        uniforms = dict(shader.get("uniforms") or {})
+        uniforms.update(palette_shader.get("uniforms") or {})
+        shader["uniforms"] = uniforms
+        terrain["shader"] = shader
 
     _status("terrain_generating")
     seed = mix_seed(user_prompt, plan["terrain"].get("seed"))

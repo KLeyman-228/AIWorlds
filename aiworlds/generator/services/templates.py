@@ -545,40 +545,160 @@ BUILDING_WORDS = (
 )
 
 
-PROMPT_TINTS = (
+BIOME_PALETTES = {
+    "snow": {
+        "grass": [0.78, 0.86, 0.92],
+        "dirt": [0.46, 0.44, 0.42],
+        "rock": [0.58, 0.60, 0.64],
+        "snow": [0.95, 0.97, 0.99],
+        "leaf": [0.82, 0.90, 0.96],
+        "leaf_dark": [0.42, 0.52, 0.60],
+        "bark": [0.28, 0.18, 0.12],
+        "moss": [0.55, 0.62, 0.68],
+        "rock_prop": [0.62, 0.64, 0.68],
+        "gradient": [
+            {"height": 0.0, "color": [150, 155, 160]},
+            {"height": 0.18, "color": [200, 214, 226]},
+            {"height": 0.55, "color": [226, 234, 242]},
+            {"height": 1.0, "color": [245, 248, 252]},
+        ],
+    },
+    "desert": {
+        "grass": [0.72, 0.58, 0.28],
+        "dirt": [0.62, 0.46, 0.22],
+        "rock": [0.58, 0.48, 0.34],
+        "snow": [0.86, 0.78, 0.58],
+        "leaf": [0.42, 0.55, 0.18],
+        "leaf_dark": [0.22, 0.32, 0.10],
+        "bark": [0.42, 0.28, 0.12],
+        "moss": [0.40, 0.36, 0.16],
+        "rock_prop": [0.62, 0.50, 0.32],
+        "gradient": [
+            {"height": 0.0, "color": [140, 100, 48]},
+            {"height": 0.4, "color": [186, 148, 72]},
+            {"height": 1.0, "color": [150, 122, 86]},
+        ],
+    },
+    "swamp": {
+        "grass": [0.22, 0.36, 0.16],
+        "dirt": [0.22, 0.18, 0.10],
+        "rock": [0.32, 0.30, 0.24],
+        "snow": [0.40, 0.44, 0.32],
+        "leaf": [0.18, 0.38, 0.14],
+        "leaf_dark": [0.08, 0.18, 0.06],
+        "bark": [0.22, 0.14, 0.08],
+        "moss": [0.20, 0.34, 0.12],
+        "rock_prop": [0.30, 0.28, 0.22],
+        "gradient": [
+            {"height": 0.0, "color": [48, 40, 22]},
+            {"height": 0.35, "color": [56, 92, 40]},
+            {"height": 1.0, "color": [82, 76, 58]},
+        ],
+    },
+    "autumn": {
+        "grass": [0.62, 0.42, 0.14],
+        "dirt": [0.40, 0.24, 0.10],
+        "rock": [0.48, 0.42, 0.34],
+        "snow": [0.72, 0.58, 0.32],
+        "leaf": [0.82, 0.38, 0.10],
+        "leaf_dark": [0.42, 0.14, 0.06],
+        "bark": [0.32, 0.18, 0.08],
+        "moss": [0.40, 0.28, 0.10],
+        "rock_prop": [0.48, 0.40, 0.32],
+        "gradient": [
+            {"height": 0.0, "color": [102, 62, 26]},
+            {"height": 0.4, "color": [158, 108, 36]},
+            {"height": 1.0, "color": [122, 108, 86]},
+        ],
+    },
+}
+
+FOLIAGE_TINTS = (
     (("син", "голуб", "blue", "azure", "cyan"), [0.18, 0.42, 0.95], [0.08, 0.18, 0.48]),
     (("красн", "алы", "red", "crimson"), [0.92, 0.18, 0.14], [0.42, 0.08, 0.06]),
     (("золот", "жёлт", "желт", "gold", "yellow"), [0.95, 0.78, 0.18], [0.48, 0.32, 0.06]),
     (("фиолет", "lilac", "purple", "violet"), [0.62, 0.28, 0.92], [0.28, 0.10, 0.42]),
-    (("бел", "white", "snow"), [0.92, 0.95, 0.98], [0.55, 0.62, 0.72]),
-    (("чёрн", "черн", "black", "dark"), [0.12, 0.12, 0.14], [0.05, 0.05, 0.06]),
+    (("чёрн", "черн", "black"), [0.12, 0.12, 0.14], [0.05, 0.05, 0.06]),
 )
 
 
-def tint_spec_from_prompt(spec: dict, prompt: str) -> dict:
+def infer_palette(prompt: str) -> dict:
+    text = (prompt or "").lower()
+    biome = None
+    if any(w in text for w in ("снег", "снежн", "зим", "ледян", "snow", "winter", "frost", "ice", "arctic")):
+        biome = "snow"
+    elif any(w in text for w in ("пустын", "дюн", "саванн", "desert", "dune", "sahara")):
+        biome = "desert"
+    elif any(w in text for w in ("болот", "топк", "swamp", "marsh", "bog")):
+        biome = "swamp"
+    elif any(w in text for w in ("осень", "осенн", "autumn", "fall")):
+        biome = "autumn"
+    foliage = None
+    foliage_dark = None
+    for words, leaf, dark in FOLIAGE_TINTS:
+        if any(word in text for word in words):
+            foliage, foliage_dark = leaf, dark
+            break
+    if biome == "snow" and foliage is None:
+        foliage = BIOME_PALETTES["snow"]["leaf"]
+        foliage_dark = BIOME_PALETTES["snow"]["leaf_dark"]
+    glow = any(w in text for w in ("свеч", "glow", "emiss", "магич", "glowing", "neon", "сия"))
+    return {
+        "biome": biome,
+        "terrain": dict(BIOME_PALETTES[biome]) if biome else None,
+        "leaf": foliage,
+        "leaf_dark": foliage_dark,
+        "glow": glow,
+    }
+
+
+def apply_palette_to_prop(spec: dict, palette: dict, prompt: str = "") -> dict:
     out = dict(spec or {})
     params = dict(out.get("params") or {}) if isinstance(out.get("params"), dict) else {}
     text = f"{prompt or ''} {out.get('name') or ''} {out.get('template') or ''}".lower()
-    for words, leaf, dark in PROMPT_TINTS:
-        if any(word in text for word in words):
-            out["leaf"] = leaf
-            out["leaf_dark"] = dark
-            params["leaf"] = leaf
-            params["leaf_dark"] = dark
-            if "petal" not in out:
-                out["petal"] = leaf
-                params["petal"] = leaf
-            if "crystal" not in out:
-                out["crystal"] = leaf
-                params["crystal"] = leaf
-            break
-    if any(word in text for word in ("свеч", "glow", "emiss", "магич", "glowing", "neon", "сия")):
+    leaf = palette.get("leaf") if palette else None
+    dark = palette.get("leaf_dark") if palette else None
+    if leaf is None:
+        for words, tint, tint_dark in FOLIAGE_TINTS:
+            if any(word in text for word in words):
+                leaf, dark = tint, tint_dark
+                break
+    if leaf:
+        out["leaf"] = leaf
+        out["leaf_dark"] = dark or [c * 0.45 for c in leaf]
+        params["leaf"] = out["leaf"]
+        params["leaf_dark"] = out["leaf_dark"]
+        out["petal"] = params["petal"] = out.get("petal") or leaf
+        terrain = (palette or {}).get("terrain") or {}
+        if terrain.get("bark") and "bark" not in out and "bark" not in params:
+            out["bark"] = params["bark"] = terrain["bark"]
+        if terrain.get("moss") and "moss" not in out:
+            out["moss"] = params["moss"] = terrain["moss"]
+        if terrain.get("rock_prop") and "rock" not in out:
+            out["rock"] = params["rock"] = terrain["rock_prop"]
+        out["crystal"] = params.get("crystal") or out.get("crystal") or leaf
+        params["crystal"] = out["crystal"]
+    if palette and palette.get("glow"):
         em = max(_em_value(out.get("em") or params.get("em") or 0), 0.85)
-        out["em"] = em
-        params["em"] = em
+        out["em"] = params["em"] = em
     if params:
         out["params"] = params
     return out
+
+
+def apply_palette_to_terrain(material, palette: dict) -> dict:
+    mat = dict(material) if isinstance(material, dict) else {}
+    terrain = (palette or {}).get("terrain")
+    if not terrain:
+        return mat
+    for key in ("grass", "dirt", "rock", "snow"):
+        if terrain.get(key):
+            mat[key] = list(terrain[key])
+    return mat
+
+
+def tint_spec_from_prompt(spec: dict, prompt: str) -> dict:
+    return apply_palette_to_prop(spec, infer_palette(prompt), prompt)
 
 
 def wants_custom(spec: dict) -> bool:

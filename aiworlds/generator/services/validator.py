@@ -265,6 +265,8 @@ def _validate_atmosphere(atmo) -> dict:
         raise PlanValidationError("Нет atmosphere от AI")
     for key in ("fog_color", "sky_color", "sun_color", "ambient_color"):
         atmo[key] = _rgb(atmo.get(key), key)
+    atmo["horizon_color"] = _rgb_optional(atmo.get("horizon_color"), [199, 224, 250])
+    atmo["cloud_color"] = _rgb_optional(atmo.get("cloud_color"), [242, 247, 255])
     try:
         density = float(atmo.get("fog_density"))
     except (TypeError, ValueError):
@@ -275,12 +277,43 @@ def _validate_atmosphere(atmo) -> dict:
         time_of_day = "day"
     atmo["time_of_day"] = time_of_day
     atmo["clouds"] = bool(atmo.get("clouds", True))
-    if time_of_day == "day":
+    mode = str(atmo.get("sky_mode") or "default").lower()
+    if mode in ("x", "custom", "shader"):
+        mode = "custom"
+    elif mode in ("col", "color", "tint"):
+        mode = "color"
+    else:
+        mode = "default"
+    sky_shader = atmo.get("sky_shader")
+    if isinstance(sky_shader, dict) and (sky_shader.get("fragment") or sky_shader.get("fragment_lines")):
+        try:
+            atmo["sky_shader"] = _validate_shader(sky_shader, is_post=False)
+            mode = "custom"
+        except PlanValidationError:
+            atmo.pop("sky_shader", None)
+            mode = "color" if time_of_day != "day" else "default"
+    else:
+        atmo.pop("sky_shader", None)
+        if mode == "custom":
+            mode = "color" if time_of_day != "day" else "default"
+    atmo["sky_mode"] = mode
+    if mode == "default" and time_of_day == "day":
         sky = atmo["sky_color"]
         if sky[0] > sky[2] + 15:
             atmo["sky_color"] = [135, 185, 235]
             atmo["fog_color"] = [170, 200, 230]
+            atmo["horizon_color"] = [199, 224, 250]
+            atmo["cloud_color"] = [242, 247, 255]
     return atmo
+
+
+def _rgb_optional(value, fallback) -> list[int]:
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return list(fallback)
+    try:
+        return [max(0, min(255, int(v))) for v in value[:3]]
+    except (TypeError, ValueError):
+        return list(fallback)
 
 
 def _rgb(value, field: str) -> list[int]:
